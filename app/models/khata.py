@@ -20,10 +20,15 @@ def build_khata_entry(
     description: str = "", customer_identifier: Optional[str] = None,
     source: str = "text",
 ) -> Dict:
+    if entry_type not in {EntryType.CREDIT.value, EntryType.PAYMENT.value}:
+        raise ValueError("Invalid khata entry type")
+    normalized_name = normalize_text(customer_name).strip()
+    if not normalized_name:
+        raise ValueError("Customer name is required")
     return {
         "merchant_id": merchant_id,
-        "customer_name": normalize_text(customer_name).title(),
-        "customer_key": customer_key(customer_name),
+        "customer_name": normalized_name.title(),
+        "customer_key": customer_key(normalized_name),
         "customer_identifier": customer_identifier,
         "amount": round(float(amount), 2),
         "entry_type": entry_type,

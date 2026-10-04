@@ -18,7 +18,7 @@ Field naming: responses use the frontend's camelCase shapes (name,
 categoryKey, distanceMeters, ...) so the React app needs no mapping layer.
 """
 from datetime import timedelta
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -214,17 +214,16 @@ class LoginBody(BaseModel):
 class RegisterBody(BaseModel):
     fullName: str = Field(min_length=2, max_length=120)
     email: str = Field(min_length=5, max_length=320)
-    phone: str = ""
+    phone: str = Field(min_length=10, max_length=20)
     password: str = Field(min_length=8, max_length=128)
-    role: str = UserRole.CUSTOMER.value
+    role: Literal[UserRole.CUSTOMER.value, UserRole.SHOPKEEPER.value]
 
 
 @router.post("/auth/register")
 async def web_register(body: RegisterBody, request: Request):
     if not check_auth_rate_limit(request):
         _error(429, "Too many attempts. Please wait a minute and try again.")
-    role = body.role if body.role in {UserRole.CUSTOMER.value, UserRole.SHOPKEEPER.value} \
-        else UserRole.CUSTOMER.value
+    role = body.role
     try:
         user = await auth_service.register_user(
             full_name=body.fullName, email=body.email, phone=body.phone,
@@ -293,10 +292,6 @@ async def web_telegram_link(user: dict = Depends(require_user)):
 
 # ------------------------------------------------------------------- profile
 
-class RoleBody(BaseModel):
-    role: str
-
-
 class CreateShopBody(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     categoryKey: str = Field(min_length=2, max_length=64)
@@ -311,6 +306,18 @@ class ClaimShopBody(BaseModel):
     shopId: str
 
 
+class UpdateShopLocationBody(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+
+
+class ReserveBody(BaseModel):
+    itemId: str
+    quantity: Optional[float] = Field(default=None, gt=0)
+    lat: float
+    lng: float
+
+
 @router.get("/profile")
 async def web_profile(user: dict = Depends(require_user)):
     shop = await m.shops().find_one({"user_id": user["_id"]})
@@ -323,24 +330,57 @@ async def web_profile(user: dict = Depends(require_user)):
     }
 
 
-@router.post("/profile/role")
-async def web_set_role(body: RoleBody, user: dict = Depends(require_user)):
-    if body.role not in {UserRole.CUSTOMER.value, UserRole.SHOPKEEPER.value}:
-        _error(400, "Role must be 'customer' or 'shopkeeper'.")
-    await m.users().update_one(
-        {"_id": user["_id"]},
-        {"$set": {"role": body.role, "updated_at": utcnow()}},
+@router.post("/requests/reserve")
+async def web_reserve_item(body: ReserveBody, user: dict = Depends(require_user)):
+    """Reserve an in-stock catalogue item with its shopkeeper.
+
+    This deliberately uses the same merchant confirmation flow as a free-text
+    request. A stock row is not a payment or delivery promise; the shopkeeper
+    must confirm that the item is still available.
+    """
+    try:
+        item = await m.inventory_items().find_one({"_id": ObjectId(body.itemId)})
+    except Exception:
+        item = None
+    if not item or (item.get("quantity") or 0) <= 0 or item.get("in_stock", True) is False:
+        _error(409, "This item is no longer in stock")
+
+    shop = await m.shops().find_one({
+        "_id": item.get("shop_id"),
+        "is_active": True,
+        "description": {"$not": {"$regex": "demo merchant seeded", "$options": "i"}},
+        "address": {"$not": {"$regex": "^Demo Market", "$options": "i"}},
+    })
+    if not shop:
+        _error(404, "Shop not found")
+
+    result = await search_service.create_reservation(
+        item=item,
+        shop=shop,
+        customer_id=user["_id"],
+        telegram_user_id=user.get("telegram_user_id"),
+        customer_name=user.get("full_name") or "Customer",
+        latitude=body.lat,
+        longitude=body.lng,
+        quantity=body.quantity,
     )
-    user = await auth_service.get_user_by_id(user["_id"])
-    await auth_service.ensure_role_profile(user)
-    return {"ok": True}
+    return {
+        "ok": True,
+        "requestId": result["request"]["request_id"],
+        "notified": result["notified"],
+    }
 
 
 @router.get("/profile/claimable-shops")
 async def web_claimable_shops(user: dict = Depends(require_user)):
     """Shops with no owner account yet (e.g. seeded or bot-created listings)."""
     cursor = m.shops().find(
-        {"is_active": True, "$or": [{"user_id": None}, {"user_id": {"$exists": False}}]}
+        {
+            "is_active": True,
+            "description": {"$not": {"$regex": "demo merchant seeded", "$options": "i"}},
+            "address": {"$not": {"$regex": "^Demo Market", "$options": "i"}},
+            "$or": [{"user_id": None}, {"user_id": {"$exists": False}}],
+        }
     ).limit(50)
     shops = [doc async for doc in cursor]
     return [shop_public(doc) for doc in shops]
@@ -393,6 +433,18 @@ async def web_create_shop(body: CreateShopBody, user: dict = Depends(require_use
     return {"ok": True}
 
 
+@router.patch("/profile/shop/location")
+async def web_update_shop_location(
+    body: UpdateShopLocationBody, shop: dict = Depends(require_my_shop),
+):
+    await m.shops().update_one(
+        {"_id": shop["_id"]},
+        {"$set": {"location": {"type": "Point", "coordinates": [body.lng, body.lat]},
+                  "updated_at": utcnow()}},
+    )
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------- catalog
 
 @router.get("/catalog/shops")
@@ -403,7 +455,12 @@ async def web_catalog_shops(
     query: Optional[str] = None,
     limit: int = Query(50, ge=1, le=100),
 ):
-    match: dict = {"is_active": True}
+    # Demo seed records must never be presented as real local businesses.
+    match: dict = {
+        "is_active": True,
+        "description": {"$not": {"$regex": "demo merchant seeded", "$options": "i"}},
+        "address": {"$not": {"$regex": "^Demo Market", "$options": "i"}},
+    }
     if category and category != "all":
         match["category"] = normalize_category(category)
 
@@ -439,7 +496,7 @@ async def web_catalog_shops(
     for doc in docs:
         coords = from_geojson_point(doc.get("location"))
         item = shop_public(
-            doc, inventory_count=await inventory_service.count_items(doc["_id"])
+            doc, inventory_count=await inventory_service.count_items(doc["_id"], in_stock_only=True)
         )
         if doc["_id"] in distances and distances[doc["_id"]] is not None:
             item["distanceMeters"] = round(distances[doc["_id"]])
@@ -458,7 +515,12 @@ async def web_catalog_shop(shop_id: str, lat: Optional[float] = None, lng: Optio
         doc = None
     if not doc:
         _error(404, "Shop not found")
-    items = await inventory_service.list_items(doc["_id"], limit=200)
+    if (
+        "demo merchant seeded" in (doc.get("description") or "").lower()
+        or (doc.get("address") or "").lower().startswith("demo market")
+    ):
+        _error(404, "Shop not found")
+    items = await inventory_service.list_items(doc["_id"], limit=200, in_stock_only=True)
     out = shop_public(doc, lat=lat, lng=lng, inventory_count=len(items))
     out["inventory"] = [inventory_public(it) for it in items]
     return out
@@ -478,7 +540,12 @@ async def web_price_search(query: str, lat: Optional[float] = None, lng: Optiona
         if item.get("price") is None or not any(t in name for t in terms):
             continue
         shop = await m.shops().find_one({"_id": item["shop_id"]})
-        if not shop or not shop.get("is_active", True):
+        if (
+            not shop
+            or not shop.get("is_active", True)
+            or "demo merchant seeded" in (shop.get("description") or "").lower()
+            or (shop.get("address") or "").lower().startswith("demo market")
+        ):
             continue
         coords = from_geojson_point(shop.get("location"))
         distance = None
@@ -689,7 +756,12 @@ async def _offers_for_request(request_doc: dict) -> List[dict]:
         hint = False
         if shop:
             hint = await m.inventory_items().find_one(
-                {"shop_id": shop["_id"], "product_key": {"$in": keys}}
+                {
+                    "shop_id": shop["_id"],
+                    "product_key": {"$in": keys},
+                    "quantity": {"$gt": 0},
+                    "in_stock": {"$ne": False},
+                }
             ) is not None
         offers.append(offer_public(match, shop=shop, has_hint=hint))
     return offers
@@ -768,7 +840,7 @@ class UpdateItemBody(BaseModel):
 class AddKhataBody(BaseModel):
     customerName: str = Field(min_length=2, max_length=120)
     amount: float = Field(gt=0)
-    direction: str  # "udhaar" | "jama"
+    direction: Literal["udhaar", "jama"]
     note: Optional[str] = Field(default=None, max_length=200)
 
 

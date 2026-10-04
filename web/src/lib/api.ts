@@ -220,7 +220,7 @@ export const api = {
       apiFetch("/auth/login", { method: "POST", body }),
     ),
     register: M<
-      { fullName: string; email: string; phone?: string; password: string; role?: string },
+      { fullName: string; email: string; phone: string; password: string; role: "customer" | "shopkeeper" },
       { user: WebUser }
     >((body) => apiFetch("/auth/register", { method: "POST", body })),
     logout: M<void, { ok: boolean }>(() =>
@@ -235,9 +235,6 @@ export const api = {
     get: Q<void, { appRole: "customer" | "shopkeeper" | null; shop: Shop | null }>(
       "profile.get",
       () => apiFetch("/profile"),
-    ),
-    setRole: M<{ role: "customer" | "shopkeeper" }, { ok: boolean }>((body) =>
-      apiFetch("/profile/role", { method: "POST", body }),
     ),
     claimableShops: Q<void, Shop[]>("profile.claimableShops", () =>
       apiFetch("/profile/claimable-shops"),
@@ -257,6 +254,9 @@ export const api = {
       },
       { ok: boolean }
     >((body) => apiFetch("/profile/create-shop", { method: "POST", body })),
+    updateShopLocation: M<{ lat: number; lng: number }, { ok: boolean }>((body) =>
+      apiFetch("/profile/shop/location", { method: "PATCH", body }),
+    ),
   },
 
   catalog: {
@@ -290,6 +290,10 @@ export const api = {
     choose: M<{ offerId: string }, { ok: boolean }>((body) =>
       apiFetch("/requests/choose", { method: "POST", body }),
     ),
+    reserve: M<
+      { itemId: string; quantity?: number; lat: number; lng: number },
+      { ok: boolean; requestId: string; notified: boolean }
+    >((body) => apiFetch("/requests/reserve", { method: "POST", body })),
   },
 
   merchant: {

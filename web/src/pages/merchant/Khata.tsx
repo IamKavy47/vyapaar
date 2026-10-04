@@ -66,7 +66,9 @@ export default function Khata() {
           </div>
           <div className="rounded-3xl border-2 border-brand-ink bg-brand-yellow p-4 text-center shadow-sticker">
             <div className="text-[10px] font-extrabold uppercase tracking-wider text-brand-ink/60">Baaki</div>
-            <div className="font-display text-[19px] text-brand-ink mt-1">{formatINR(Math.max(0, data.outstanding))}</div>
+            <div className="font-display text-[19px] text-brand-ink mt-1">
+              {data.outstanding < 0 ? `Advance ${formatINR(Math.abs(data.outstanding))}` : formatINR(data.outstanding)}
+            </div>
           </div>
         </div>
       )}

@@ -17,7 +17,7 @@ export default function Compare() {
   const [input, setInput] = useState(q);
 
   const results = trpc.catalog.priceSearch.useQuery(
-    { query: q, lat: location.lat, lng: location.lng },
+    { query: q, lat: location.lat ?? undefined, lng: location.lng ?? undefined },
     { enabled: q.length > 1 },
   );
 

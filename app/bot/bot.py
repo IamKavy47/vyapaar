@@ -3,8 +3,10 @@
 Telegram is only an interface. Every handler delegates to the service layer, so a
 WhatsApp or web front-end can be added later without touching business logic.
 """
+import asyncio
 from typing import Optional
 
+from telegram.error import Conflict, TelegramError
 from telegram import Update
 from telegram.ext import (
     Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler,
@@ -24,6 +26,7 @@ from app.utils.logging import get_logger
 logger = get_logger(__name__)
 
 _application: Optional[Application] = None
+_polling_conflict_logged = False
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -126,20 +129,44 @@ def build_application() -> Optional[Application]:
 
 async def start_bot() -> Optional[Application]:
     """Start long polling in the background of the FastAPI event loop."""
-    global _application
+    global _application, _polling_conflict_logged
+    _polling_conflict_logged = False
     application = build_application()
     if application is None:
         return None
 
     await application.initialize()
     await application.start()
+    def polling_error_callback(error: TelegramError) -> None:
+        global _polling_conflict_logged
+        if not isinstance(error, Conflict):
+            logger.error("Telegram polling failed: %s", error)
+            return
+        if _polling_conflict_logged:
+            return
+        _polling_conflict_logged = True
+        logger.error(
+            "Telegram polling stopped: another process is already polling this bot. "
+            "Run only one instance with RUN_BOT=true; set RUN_BOT=false for web-only instances."
+        )
+        asyncio.create_task(stop_conflicting_polling(application))
+
     await application.updater.start_polling(
-        allowed_updates=Update.ALL_TYPES, drop_pending_updates=True
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        error_callback=polling_error_callback,
     )
     notification_service.set_bot(application.bot)
     _application = application
     logger.info("Telegram bot started (long polling)")
     return application
+
+
+async def stop_conflicting_polling(application: Application) -> None:
+    """Disable only this instance's Telegram polling after a singleton conflict."""
+    if application.updater and application.updater.running:
+        await application.updater.stop()
+    notification_service.set_bot(None)
 
 
 async def stop_bot() -> None:

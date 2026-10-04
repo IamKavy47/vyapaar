@@ -16,8 +16,8 @@ export default function Browse() {
   const [q, setQ] = useState("");
 
   const shops = trpc.catalog.shops.useQuery({
-    lat: location.lat,
-    lng: location.lng,
+    lat: location.lat ?? undefined,
+    lng: location.lng ?? undefined,
     category: cat,
     query: q || undefined,
   });

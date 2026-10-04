@@ -51,14 +51,21 @@ export default function SearchFlow() {
       return;
     }
     if (!q) return;
+    if (location.lat == null || location.lng == null) {
+      toast.error("Pehle apni location allow karo");
+      location.locate();
+      return;
+    }
+    const requestLat = location.lat;
+    const requestLng = location.lng;
     startedRef.current = true;
     (async () => {
       try {
         const res = await createRequest.mutateAsync({
           rawText: q,
           inputType,
-          lat: location.lat,
-          lng: location.lng,
+          lat: requestLat,
+          lng: requestLng,
         });
         setIntent(res.intent);
         setRequestId(res.requestId);

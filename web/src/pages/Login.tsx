@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { ShoppingBasket, Mic, Zap, MapPin, Eye, EyeOff } from "lucide-react";
+import { ShoppingBasket, Mic, Zap, MapPin, Eye, EyeOff, Store, ShoppingBag } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
 import { api, ApiError } from "@/lib/api";
@@ -22,6 +22,7 @@ export default function Login() {
   const [mode, setMode] = useState<Mode>("login");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
+  const [role, setRole] = useState<"customer" | "shopkeeper">("customer");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -44,6 +45,10 @@ export default function Login() {
       toast.error("Apna naam likho");
       return;
     }
+    if (mode === "register" && phone.trim().length < 10) {
+      toast.error("Valid phone number bharo");
+      return;
+    }
     if (mode === "register" && password.length < 8) {
       toast.error("Password kam se kam 8 characters ka ho");
       return;
@@ -58,7 +63,7 @@ export default function Login() {
           email: email.trim(),
           phone: phone.trim(),
           password,
-          role: "customer",
+          role,
         });
       }
       await refresh();
@@ -140,11 +145,31 @@ export default function Login() {
                 <input
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  placeholder="Phone (optional)"
+                  placeholder="Phone number"
                   autoComplete="tel"
                   inputMode="tel"
                   className="w-full rounded-2xl border-2 border-brand-ink/15 bg-background px-4 py-3 font-bold text-[15px] outline-none focus:border-brand-green"
                 />
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ["customer", "Customer", ShoppingBag],
+                    ["shopkeeper", "Dukaandaar", Store],
+                  ] as const).map(([value, label, Icon]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setRole(value)}
+                      className={clsx(
+                        "rounded-2xl border-2 py-3 text-[12px] font-extrabold flex items-center justify-center gap-1.5",
+                        role === value
+                          ? "bg-brand-ink text-brand-yellow border-brand-ink"
+                          : "bg-background border-brand-ink/15 text-brand-ink/60",
+                      )}
+                    >
+                      <Icon className="w-4 h-4" /> {label}
+                    </button>
+                  ))}
+                </div>
               </>
             )}
             <input

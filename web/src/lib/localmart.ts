@@ -27,5 +27,3 @@ export function categoryMeta(key: string): CategoryMeta {
 export type AppRole = "customer" | "shopkeeper";
 export type RequestStatus = "matching" | "offers" | "completed" | "no_match";
 export type OfferStatus = "pending" | "accepted" | "declined" | "expired";
-
-export const DEMO_CENTER = { lat: 24.0734, lng: 75.0699, label: "Mandsaur, MP" };

@@ -1,19 +1,22 @@
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { DEMO_CENTER } from "@/lib/localmart";
-
 interface LocationState {
-  lat: number;
-  lng: number;
+  lat: number | null;
+  lng: number | null;
   label: string;
   locating: boolean;
   locate: () => void;
+  setManual: (lat: number, lng: number) => void;
 }
 
 const Ctx = createContext<LocationState | null>(null);
 
 export function LocationProvider({ children }: { children: ReactNode }) {
-  const [loc, setLoc] = useState({ lat: DEMO_CENTER.lat, lng: DEMO_CENTER.lng, label: DEMO_CENTER.label });
+  const [loc, setLoc] = useState<{ lat: number | null; lng: number | null; label: string }>({
+    lat: null,
+    lng: null,
+    label: "Location not set",
+  });
   const [locating, setLocating] = useState(false);
 
   const locate = useCallback(() => {
@@ -28,10 +31,13 @@ export function LocationProvider({ children }: { children: ReactNode }) {
       { timeout: 8000 },
     );
   }, []);
+  const setManual = useCallback((lat: number, lng: number) => {
+    setLoc({ lat, lng, label: "Manual location" });
+  }, []);
 
   const value = useMemo(
-    () => ({ ...loc, locating, locate }),
-    [loc, locating, locate],
+    () => ({ ...loc, locating, locate, setManual }),
+    [loc, locating, locate, setManual],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

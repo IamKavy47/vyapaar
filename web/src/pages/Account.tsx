@@ -1,19 +1,20 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
-import { LogOut, Store, ShoppingBag, Repeat, ChevronRight, BadgeCheck, Send } from "lucide-react";
+import { LogOut, Store, ShoppingBag, ChevronRight, BadgeCheck, Send } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { api as trpc, ApiError } from "@/lib/api";
 import { TopBar } from "@/components/shell";
 import { CategoryIcon } from "@/components/brand";
+import { LocationPicker } from "@/components/LocationPicker";
 
 export default function Account() {
   const { user, logout, refresh } = useAuth();
   const navigate = useNavigate();
   const utils = trpc.useUtils();
   const profile = trpc.profile.get.useQuery();
-  const setRole = trpc.profile.setRole.useMutation();
   const telegramLink = trpc.auth.telegramLink.useMutation();
+  const updateShopLocation = trpc.profile.updateShopLocation.useMutation();
   const [tgBusy, setTgBusy] = useState(false);
 
   const connectTelegram = async () => {
@@ -36,17 +37,10 @@ export default function Account() {
 
   const role = profile.data?.appRole ?? "customer";
   const shop = profile.data?.shop;
-
-  const switchRole = async () => {
-    const next = role === "customer" ? "shopkeeper" : "customer";
-    if (next === "shopkeeper" && !shop) {
-      navigate("/onboarding");
-      return;
-    }
-    await setRole.mutateAsync({ role: next });
-    await utils.invalidate();
-    toast.success(next === "shopkeeper" ? "Dukaandaar mode on" : "Customer mode on");
-    navigate(next === "shopkeeper" ? "/merchant" : "/");
+  const saveShopLocation = async (lat: number, lng: number) => {
+    await updateShopLocation.mutateAsync({ lat, lng });
+    await utils.profile.get.invalidate();
+    toast.success("Dukaan ki location update ho gayi");
   };
 
   return (
@@ -88,26 +82,13 @@ export default function Account() {
           <ChevronRight className="w-5 h-5 text-brand-ink/30" />
         </button>
       )}
+      <LocationPicker
+        shopMode={role === "shopkeeper"}
+        onSave={role === "shopkeeper" && shop ? saveShopLocation : undefined}
+      />
 
       {/* actions */}
       <section className="mt-5 rounded-[28px] border-2 border-brand-ink/12 bg-card overflow-hidden divide-y-2 divide-brand-ink/5">
-        <button
-          onClick={switchRole}
-          className="w-full flex items-center gap-3.5 px-5 py-4 text-left hover:bg-brand-yellow/20 transition-colors"
-        >
-          <span className="w-10 h-10 rounded-2xl bg-brand-yellow/60 grid place-items-center">
-            <Repeat className="w-5 h-5 text-brand-ink" />
-          </span>
-          <span className="flex-1">
-            <span className="block font-extrabold text-[14.5px]">
-              {role === "customer" ? "Dukaandaar mode" : "Customer mode"}
-            </span>
-            <span className="block text-[12px] font-semibold text-muted-foreground">
-              {role === "customer" ? "Apni dukaan sambhalo" : "Kharidari pe wapas"}
-            </span>
-          </span>
-          <ChevronRight className="w-5 h-5 text-brand-ink/30" />
-        </button>
         <button
           onClick={connectTelegram}
           disabled={tgBusy}

@@ -17,6 +17,16 @@ def test_entry_normalizes_name():
     assert entry["customer_key"] == "ramesh"
 
 
+def test_entry_rejects_unknown_type():
+    try:
+        build_khata_entry(merchant_id="m1", customer_name="Ramesh", amount=500,
+                          entry_type="unknown")
+    except ValueError as exc:
+        assert str(exc) == "Invalid khata entry type"
+    else:
+        raise AssertionError("invalid entry type was accepted")
+
+
 def test_customer_key_is_case_insensitive():
     assert customer_key("RAMESH") == customer_key("ramesh")
 

@@ -168,7 +168,15 @@ async def find_candidates(request: Dict, *, limit: Optional[int] = None) -> Dict
                     "distanceField": "distance_meters",
                     "maxDistance": radius,
                     "spherical": True,
-                    "query": {"is_active": True},
+                    "query": {
+                        "is_active": True,
+                        "description": {
+                            "$not": {"$regex": "demo merchant seeded", "$options": "i"}
+                        },
+                        "address": {
+                            "$not": {"$regex": "^Demo Market", "$options": "i"}
+                        },
+                    },
                 }
             },
             {"$limit": 60},

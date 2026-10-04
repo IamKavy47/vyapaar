@@ -26,7 +26,9 @@ export function useRole() {
 function RoleHome() {
   const { isAuthenticated } = useAuth();
   const profile = trpc.profile.get.useQuery(undefined, { enabled: isAuthenticated });
-  if (profile.data?.appRole === "shopkeeper") return <Navigate to="/merchant" replace />;
+  if (profile.data?.appRole === "shopkeeper") {
+    return <Navigate to={profile.data.shop ? "/merchant" : "/onboarding"} replace />;
+  }
   return <Home />;
 }
 

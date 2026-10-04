@@ -22,11 +22,14 @@ async def add_entry(*, merchant_id, customer_name: str, amount: float, entry_typ
         raise KhataError("Customer ka naam nahi mila.")
     if amount <= 0:
         raise KhataError("Amount samajh nahi aaya.")
-    doc = build_khata_entry(
-        merchant_id=ObjectId(str(merchant_id)), customer_name=customer_name, amount=amount,
-        entry_type=entry_type, description=description, source=source,
-        customer_identifier=customer_identifier,
-    )
+    try:
+        doc = build_khata_entry(
+            merchant_id=ObjectId(str(merchant_id)), customer_name=customer_name, amount=amount,
+            entry_type=entry_type, description=description, source=source,
+            customer_identifier=customer_identifier,
+        )
+    except ValueError as exc:
+        raise KhataError(str(exc)) from exc
     await m.khata_entries().insert_one(doc)
     logger.info("khata entry stored | %s %s ₹%s", doc["customer_name"], entry_type, amount)
     return doc
@@ -61,6 +64,7 @@ async def balance_for(merchant_id, customer_name: str) -> KhataBalance:
 async def summary(merchant_id) -> KhataSummary:
     pipeline = [
         {"$match": {"merchant_id": ObjectId(str(merchant_id))}},
+        {"$sort": {"created_at": 1}},
         {"$group": {
             "_id": "$customer_key",
             "customer_name": {"$last": "$customer_name"},
@@ -72,7 +76,6 @@ async def summary(merchant_id) -> KhataSummary:
             "last_entry_at": {"$max": "$created_at"},
         }},
         {"$sort": {"last_entry_at": -1}},
-        {"$limit": 50},
     ]
     balances: List[KhataBalance] = []
     total = 0.0

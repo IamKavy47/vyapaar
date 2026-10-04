@@ -1,4 +1,5 @@
 import { useNavigate, useParams } from "react-router";
+import { toast } from "sonner";
 import { BadgeCheck, MapPin, Phone, Navigation, PackageOpen } from "lucide-react";
 import { api as trpc } from "@/lib/api";
 import { useLocation } from "@/lib/location";
@@ -10,9 +11,16 @@ export default function ShopDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const reserve = trpc.request.reserve.useMutation({
+    onSuccess: (result) => {
+      toast.success("Request dukaan ko bhej di. Confirmation ka wait karo.");
+      navigate(`/search?rid=${encodeURIComponent(result.requestId)}&q=${encodeURIComponent("stock request")}`);
+    },
+    onError: (error) => toast.error(error.message),
+  });
 
   const shop = trpc.catalog.shop.useQuery(
-    { id: id ?? "", lat: location.lat, lng: location.lng },
+    { id: id ?? "", lat: location.lat ?? undefined, lng: location.lng ?? undefined },
     { enabled: !!id },
   );
 
@@ -134,6 +142,26 @@ export default function ShopDetail() {
                     {it.inStock ? "In stock" : "Out"}
                   </span>
                 </div>
+                {it.inStock && (
+                  <button
+                    onClick={() => {
+                      if (location.lat == null || location.lng == null) {
+                        toast.error("Pehle apni location allow karo");
+                        location.locate();
+                        return;
+                      }
+                      reserve.mutate({
+                        itemId: it.id,
+                        lat: location.lat,
+                        lng: location.lng,
+                      });
+                    }}
+                    disabled={reserve.isPending}
+                    className="rounded-full border-2 border-brand-green bg-brand-green px-3 py-2 text-[11px] font-extrabold text-brand-cream disabled:opacity-50"
+                  >
+                    {reserve.isPending ? "Bhej rahe…" : "Order karo"}
+                  </button>
+                )}
               </div>
             ))}
           </div>

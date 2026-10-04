@@ -54,15 +54,19 @@ async def bulk_store(shop_id, extraction: InventoryExtraction, *, source: str) -
     return stored
 
 
-async def list_items(shop_id, limit: int = 30) -> List[Dict]:
-    cursor = m.inventory_items().find(
-        {"shop_id": ObjectId(str(shop_id))}
-    ).sort("updated_at", -1).limit(limit)
+async def list_items(shop_id, limit: int = 30, *, in_stock_only: bool = False) -> List[Dict]:
+    query = {"shop_id": ObjectId(str(shop_id))}
+    if in_stock_only:
+        query.update({"quantity": {"$gt": 0}, "in_stock": {"$ne": False}})
+    cursor = m.inventory_items().find(query).sort("updated_at", -1).limit(limit)
     return [doc async for doc in cursor]
 
 
-async def count_items(shop_id) -> int:
-    return await m.inventory_items().count_documents({"shop_id": ObjectId(str(shop_id))})
+async def count_items(shop_id, *, in_stock_only: bool = False) -> int:
+    query = {"shop_id": ObjectId(str(shop_id))}
+    if in_stock_only:
+        query.update({"quantity": {"$gt": 0}, "in_stock": {"$ne": False}})
+    return await m.inventory_items().count_documents(query)
 
 
 async def remove_item(shop_id, product: str) -> bool:

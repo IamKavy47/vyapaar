@@ -23,7 +23,7 @@ export default function Home() {
   const [q, setQ] = useState("");
   const photoRef = useRef<HTMLInputElement>(null);
 
-  const shops = trpc.catalog.shops.useQuery({ lat: location.lat, lng: location.lng });
+  const shops = trpc.catalog.shops.useQuery({ lat: location.lat ?? undefined, lng: location.lng ?? undefined });
   const trending = trpc.catalog.trending.useQuery();
 
   const speech = useSpeech((text) => {
