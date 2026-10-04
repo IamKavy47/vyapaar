@@ -22,6 +22,7 @@ from typing import List, Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -237,7 +238,7 @@ async def web_register(body: RegisterBody, request: Request):
             "MongoDB is unavailable during web registration.",
             operation="web.register", cause=exc,
         ) from exc
-    response = JSONResponse({"user": auth_service.to_public(user)})
+    response = JSONResponse(jsonable_encoder({"user": auth_service.to_public(user)}))
     set_session_cookie(response, session_id)
     return response
 
@@ -256,7 +257,7 @@ async def web_login(body: LoginBody, request: Request):
             "MongoDB is unavailable during web login.",
             operation="web.login", cause=exc,
         ) from exc
-    response = JSONResponse({"user": auth_service.to_public(user)})
+    response = JSONResponse(jsonable_encoder({"user": auth_service.to_public(user)}))
     set_session_cookie(response, session_id)
     return response
 
