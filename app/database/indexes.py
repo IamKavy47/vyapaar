@@ -11,7 +11,13 @@ logger = get_logger(__name__)
 async def create_indexes() -> None:
     try:
         await m.users().create_index([("email", ASCENDING)], unique=True, sparse=True)
-        await m.users().create_index([("telegram_user_id", ASCENDING)], unique=True, sparse=True)
+        # Partial, not sparse: sparse still indexes an explicit null, so every
+        # web-registered or logged-out user would collide on the same null.
+        await m.users().create_index(
+            [("telegram_user_id", ASCENDING)], unique=True,
+            partialFilterExpression={"telegram_user_id": {"$type": "number"}},
+            name="telegram_user_id_unique_linked",
+        )
         await m.users().create_index([("role", ASCENDING)])
 
         await m.customers().create_index([("user_id", ASCENDING)], unique=True)

@@ -53,3 +53,17 @@ def test_valid_coordinates():
 def test_humanize_distance():
     assert humanize_distance(203) == "~200m"
     assert humanize_distance(1500) == "~1.5km"
+
+
+def test_navigation_link_uses_google_maps_directions():
+    from app.utils.geo import navigation_link
+    url = navigation_link(24.0734, 75.0686)
+    assert url.startswith("https://www.google.com/maps/dir/?api=1")
+    assert "destination=24.073400,75.068600" in url
+
+
+def test_map_pin_link_uses_google_maps_search():
+    from app.utils.geo import map_pin_link
+    url = map_pin_link(24.0734, 75.0686)
+    assert url.startswith("https://www.google.com/maps/search/?api=1")
+    assert "query=24.073400,75.068600" in url

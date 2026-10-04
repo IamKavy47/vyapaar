@@ -18,11 +18,23 @@ class Settings(BaseSettings):
     PUBLIC_BASE_URL: str = "http://localhost:8000"
     LOG_LEVEL: str = "INFO"
     DEMO_MODE: bool = True
-    RUN_BOT: bool = True
+    RUN_BOT: bool = False
+    ENABLE_SCHEDULER: bool = False
 
     # ---------------- Telegram ----------------
     TELEGRAM_BOT_TOKEN: str = ""
+    # Bot username (without @) — used to build t.me deep links for web users
+    # connecting their Telegram account.
+    TELEGRAM_BOT_USERNAME: str = ""
     ADMIN_TELEGRAM_IDS: str = ""
+
+    # ---------------- Web frontend (React app in web/) ----------------
+    # Comma-separated origins allowed to call /api/v1 with cookies when the
+    # web app is hosted separately from this backend (e.g. Vite dev server).
+    WEB_CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+    # Built frontend directory. Empty -> auto-detect <repo>/web/dist.
+    # When it exists, FastAPI serves the React app at / with SPA fallback.
+    WEB_DIST_DIR: str = ""
 
     # ---------------- MongoDB ----------------
     MONGODB_URI: str = "mongodb://localhost:27017"
@@ -48,7 +60,7 @@ class Settings(BaseSettings):
 
     SARVAM_API_KEY: str = ""
     SARVAM_BASE_URL: str = "https://api.sarvam.ai"
-    SARVAM_STT_MODEL: str = "saarika:v2"
+    SARVAM_STT_MODEL: str = "saaras:v4"
     SARVAM_LANGUAGE: str = "hi-IN"
 
     AI_TIMEOUT_SECONDS: float = 45.0
@@ -60,6 +72,14 @@ class Settings(BaseSettings):
     MAX_MERCHANTS_PER_REQUEST: int = 8
     MERCHANT_COOLDOWN_HOURS: int = 12
     REQUEST_EXPIRY_MINUTES: int = 30
+
+    # A customer's own range preference. Defaults to the 5km auto-expansion
+    # ceiling above, but each customer can widen or narrow it — rural users
+    # often need more than 5km, dense markets often want less noise.
+    SEARCH_RADIUS_DEFAULT_METERS: int = 5000
+    SEARCH_RADIUS_MIN_METERS: int = 1000
+    SEARCH_RADIUS_MAX_METERS: int = 20000
+    SEARCH_RADIUS_PRESETS_METERS: str = "1000,2000,5000,10000,20000"
 
     WEIGHT_CATEGORY: float = 0.30
     WEIGHT_CAPABILITY: float = 0.35
@@ -114,6 +134,30 @@ class Settings(BaseSettings):
         if not steps:
             steps = [self.MATCH_RADIUS_METERS, self.MAX_MATCH_RADIUS_METERS]
         return sorted(set(steps))
+
+    @property
+    def web_cors_origin_list(self) -> List[str]:
+        return [o.strip() for o in self.WEB_CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def web_dist_dir(self):
+        from pathlib import Path
+        if self.WEB_DIST_DIR:
+            return Path(self.WEB_DIST_DIR)
+        return Path(__file__).resolve().parent.parent.parent / "web" / "dist"
+
+    @property
+    def search_radius_presets(self) -> List[int]:
+        presets = []
+        for chunk in self.SEARCH_RADIUS_PRESETS_METERS.split(","):
+            chunk = chunk.strip()
+            if chunk.isdigit():
+                value = int(chunk)
+                if self.SEARCH_RADIUS_MIN_METERS <= value <= self.SEARCH_RADIUS_MAX_METERS:
+                    presets.append(value)
+        if not presets:
+            presets = [self.SEARCH_RADIUS_DEFAULT_METERS]
+        return sorted(set(presets))
 
     @property
     def llm_chain(self) -> List[str]:

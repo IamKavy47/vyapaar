@@ -1,3 +1,12 @@
+# ---- Stage 1: build the React web app (web/ -> web/dist) ----
+FROM node:20-slim AS webbuild
+WORKDIR /web
+COPY web/package.json web/package-lock.json* ./
+RUN npm install
+COPY web/ .
+RUN npm run build
+
+# ---- Stage 2: backend + bot, serving the built web app at / ----
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -15,6 +24,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY --from=webbuild /web/dist ./web/dist
 
 RUN useradd --create-home --uid 1000 vyapaar && chown -R vyapaar:vyapaar /app
 USER vyapaar

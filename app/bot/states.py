@@ -16,6 +16,7 @@ MODE_AWAIT_SHOP_NAME = "await_shop_name"
 MODE_AWAIT_CATEGORY = "await_category"
 MODE_AWAIT_CAPABILITIES = "await_capabilities"
 MODE_AWAIT_KHATA_REMINDER = "await_khata_reminder"
+MODE_AWAIT_RADIUS = "await_radius"
 
 
 def set_mode(context, mode: str) -> None:

@@ -56,8 +56,9 @@ entire thesis, and the seed data is built to demonstrate it.
 Telegram  (customer + merchant interface)
     │
     ▼
-FastAPI   (backend + minimal HTML auth pages)
-    │
+FastAPI   (backend + minimal HTML auth pages + /api/v1 JSON for the web app)
+    ▲          ▲
+    │          └── Web  (React app in web/ — LocalMart UI)
     ▼
 Business services   (search, matching, demand, khata, inventory, auth, email)
     │
@@ -72,9 +73,20 @@ AI services
 ```
 
 **Architectural rule:** Telegram handlers contain *no* business logic. Everything lives in
-`app/services/`, so WhatsApp or a web front-end can be added later without rewriting the core.
+`app/services/` — the React web app (`web/`) plugs into those same services through
+`app/api/web.py`, so web and Telegram share one database and one matching engine:
 
-There is no React and no Next.js. FastAPI serves the handful of HTML pages directly with Jinja2.
+- A customer searching on the **web** triggers the same zero-inventory matching, and
+  merchants still get the request on **Telegram** (plus their web inbox).
+- A merchant answering YES/NO in the **web inbox** runs the same
+  `handle_merchant_response` path as the bot — demand events are recorded and the
+  customer is notified on Telegram if they linked their account.
+- Web users connect their Telegram from **Account → Connect Telegram** (a one-time
+  `t.me` deep link consumed by the bot's `/start web_<token>` handler).
+
+FastAPI also serves the legacy HTML auth pages under `/auth`, and when `web/dist`
+exists it serves the built React app at `/` with SPA fallback — one process for
+frontend, REST API and bot.
 
 ## 5. AI architecture
 
@@ -161,17 +173,29 @@ Account created/verified → linked to telegram_user_id → signed session cooki
 
 ## 8. Feature list
 
-**Core** · customer & shopkeeper onboarding · role selection · secure account linking ·
-location sharing · voice / text / image search · Sarvam STT · Gemini intent · Groq & GPT-OSS
-fallback · category and capability inference · geospatial hyperlocal search ·
-**zero-inventory matching** · merchant YES/NO · merchant price · customer notification ·
-demand events · demand analytics · merchant cooldown
+**Core** · customer & shopkeeper onboarding · role selection with shop category and
+location captured at registration · secure account linking · Telegram logout (unlinks
+without deleting the account) · location sharing · voice / text / image search · Sarvam
+STT · Gemini intent · Groq & GPT-OSS fallback · category and capability inference ·
+geospatial hyperlocal search · **zero-inventory matching** · merchant YES/NO · merchant
+price · customer notification · demand events · demand analytics · merchant cooldown
+
+**Browse & navigate** · browse nearby shops and their listed stock without typing a
+search · browse by category · reserve a specific in-stock item (routes through the same
+YES/NO confirmation as search — no payments, no orders) · shop address, phone and a
+one-tap Google Maps navigation link shown to the customer on every match and reservation
+· a real Telegram map pin dropped alongside the text
 
 **Business** · Digital Khata (typed & voice) · optional inventory · voice inventory ·
 invoice/shelf photo inventory · smart deal comparison · search history · demand reports
 
 **Communication** · Telegram notifications · optional SMTP email, verification, khata
 reminders, scheduled demand reports
+
+**Reliability** · a typed error hierarchy (`app/utils/errors.py`) shared by the bot and
+the API: every failure gets a short reference id shown to the user and logged with full
+context, so a support conversation can be traced straight to the stack trace that caused
+it, without ever showing the user a raw exception
 
 ## 9. Project structure
 
@@ -193,12 +217,19 @@ vyapaar-mitra/
 │   ├── services/               all business logic
 │   ├── bot/                    Telegram interface only
 │   │   ├── bot.py, keyboards.py, states.py, middleware.py
-│   │   └── handlers/           start, auth, customer, merchant, search,
+│   │   └── handlers/           start, auth, customer, merchant, search, browse,
 │   │                           inventory, khata, demand, admin, router
 │   ├── api/                    health, auth, shops, requests, demand
-│   ├── templates/              base, login, register, telegram_link, success, error
-│   ├── static/css/auth.css
-│   └── utils/                  geo, security, parsing, logging
+│   │   └── web.py              /api/v1 JSON REST API for the React web app
+│   ├── templates/              base, login, register, _shop_fields, telegram_link,
+│   │                           success, error
+│   ├── static/css/auth.css · static/js/shop-fields.js
+│   └── utils/                  geo, security, parsing, logging, errors
+├── web/                        LocalMart React frontend (Vite + Tailwind + shadcn)
+│   ├── src/pages/              customer (Home, SearchFlow, Browse, Compare, …)
+│   │                           merchant (Inbox, Inventory, Khata, Demand)
+│   ├── src/lib/api.ts          REST client for /api/v1 (React Query)
+│   └── dist/                   production build — served by FastAPI at /
 ├── tests/
 ├── scripts/                    seed_demo_data.py, test_pipeline.py
 ├── requirements.txt · Dockerfile · docker-compose.yml · .env.example
@@ -212,6 +243,11 @@ python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env    # then fill in the keys below
 ```
+
+Shopkeepers now set their shop's category and pin their location on the registration
+page itself (browser geolocation, with a manual fallback of sending the pin from
+Telegram later) — both are asked for once because neither changes day to day, and a
+shop with no category or no location cannot be matched to anyone.
 
 ### MongoDB setup
 
@@ -287,6 +323,26 @@ docker compose up --build
 Check `http://localhost:8000/health` — it reports database status and which AI providers are
 configured.
 
+### Web app (React frontend in `web/`)
+
+```bash
+cd web
+npm install
+npm run dev        # http://localhost:3000 — proxies /api to the backend on :8000
+```
+
+For production, build the frontend once and let FastAPI serve everything:
+
+```bash
+cd web && npm run build && cd ..   # outputs web/dist
+python -m app.main                 # open http://localhost:8000 — React app + API + bot
+```
+
+Register on the web (email + password), pick your role, and the same account works on
+Telegram: **Account → Connect Telegram** opens the bot with a one-time link.
+If no AI provider keys are configured, web search falls back to an honest rule-based
+keyword parser (`provider="rules"`) so the flow still works end to end.
+
 ## 12. Seeding demo data
 
 ```bash
@@ -333,6 +389,9 @@ account linked to a second Telegram account with a location within 500 m.
 6. **Customer** receives: `🎉 Nearby match found! Sharma Hardware · ~200m · Teflon Tape · ₹30`
 7. **Second merchant** taps **❌ NO** → a `DemandEvent` is written and a 12-hour cooldown is set
 8. **`/demand`** shows the aggregate: `Teflon Tape — 18 requests, 11 unavailable`
+9. **Same customer** taps **🛒 Browse Nearby → 🧺 What's in stock nearby** and sees Gupta
+   Electricals' listed Electrical Tape at ₹25, taps 🧭 Navigate, and Maps opens with
+   walking directions already filled in
 
 Closing line:
 
@@ -358,6 +417,23 @@ No Telegram handy? `python -m scripts.test_pipeline` prints the same flow end to
 | GET | `/auth/telegram?token=…` | one-time linking page |
 | POST | `/auth/telegram/complete` | completes linking |
 
+### Web app API (`/api/v1`, cookie session — used by `web/`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v1/auth/register` · `/api/v1/auth/login` · `/api/v1/auth/logout` | JSON auth (sets `vm_session` cookie) |
+| GET | `/api/v1/auth/me` | current user or `null` |
+| GET | `/api/v1/auth/telegram-link` | one-time `t.me` deep link to connect Telegram |
+| GET/POST | `/api/v1/profile`, `/profile/role`, `/profile/claim-shop`, `/profile/create-shop` | onboarding & shop management |
+| GET | `/api/v1/catalog/shops` · `/catalog/shops/{id}` · `/catalog/price-search` · `/catalog/trending` | storefront data |
+| POST | `/api/v1/requests` | customer search — same matching + Telegram notify as the bot |
+| GET | `/api/v1/requests/mine` · `/api/v1/requests/{id}` | history & live offers |
+| POST | `/api/v1/requests/choose` | customer picks the winning shop |
+| GET/POST | `/api/v1/merchant/shop` · `/inbox` · `/respond` | merchant inbox (same YES/NO as bot buttons) |
+| GET/POST/PATCH/DELETE | `/api/v1/merchant/inventory…` | inventory CRUD + stock toggle |
+| GET/POST | `/api/v1/merchant/khata` | digital ledger |
+| GET | `/api/v1/merchant/demand` | neighbourhood demand signal |
+
 ```bash
 curl -X POST http://localhost:8000/api/test/match \
   -H 'Content-Type: application/json' \
@@ -366,8 +442,14 @@ curl -X POST http://localhost:8000/api/test/match \
 
 ## 16. Telegram commands
 
-`/start` `/menu` `/help` `/login` `/history` `/khata` `/khata_summary` `/inventory`
-`/demand` `/compare <product>` `/category` `/shop` `/admin` `/admin_demand`
+`/start` `/menu` `/help` `/login` `/logout` `/history` `/khata` `/khata_summary`
+`/inventory` `/browse` `/demand` `/compare <product>` `/category` `/shop` `/admin`
+`/admin_demand`
+
+`/logout` unlinks the Telegram account (with a confirm step) without deleting any
+data — shop, inventory, khata and history are all still there on the next login.
+`/browse` opens the nearby-stock menu, an alternative to `/history`'s search-and-ask
+flow for customers who'd rather look at what's already listed.
 
 ## 17. Troubleshooting
 

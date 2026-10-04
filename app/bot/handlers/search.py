@@ -5,7 +5,6 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from app.ai import intent_engine, vision_engine
-from app.ai.base import ProviderError
 from app.ai.intent_engine import AIUnavailableError, confidence_band
 from app.bot import keyboards, states
 from app.bot.middleware import (
@@ -105,9 +104,10 @@ async def _run_pipeline(update: Update, context: ContextTypes.DEFAULT_TYPE, user
 
     if not result.candidates:
         await message.reply_text(
-            f"😔 {humanize_distance(settings.MAX_MATCH_RADIUS_METERS)} ke andar koi "
+            f"😔 {humanize_distance(result.radius_used_meters)} ke andar koi "
             "matching shop nahi mili.\n\nAapki request demand data mein record ho gayi hai — "
-            "jaise hi koi shop aayegi, aapko pata chalega."
+            "jaise hi koi shop aayegi, aapko pata chalega.\n\n"
+            "📏 Range badhane ke liye 📏 Range button dabaiye."
         )
         return
 
@@ -155,7 +155,9 @@ async def handle_voice_search(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         telegram_file = await voice.get_file()
         audio_bytes = bytes(await telegram_file.download_as_bytearray())
-    except Exception:
+    except Exception as exc:
+        logger.warning("voice download failed | user=%s error=%s: %s",
+                       (user or {}).get("_id"), exc.__class__.__name__, exc)
         await message.reply_text("🎤 Voice download nahi ho paayi. Dobara try kijiye.")
         return
 
@@ -163,8 +165,9 @@ async def handle_voice_search(update: Update, context: ContextTypes.DEFAULT_TYPE
         transcript = await intent_engine.transcribe_voice(
             audio_bytes, mime_type=getattr(voice, "mime_type", None) or "audio/ogg"
         )
-    except (ProviderError, Exception) as exc:
-        logger.warning("STT failed: %s", exc)
+    except Exception as exc:
+        logger.warning("STT failed | user=%s error=%s: %s",
+                       (user or {}).get("_id"), exc.__class__.__name__, exc)
         await message.reply_text(STT_DOWN)
         return
 
@@ -214,7 +217,9 @@ async def handle_photo_search(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         telegram_file = await photos[-1].get_file()
         image_bytes = bytes(await telegram_file.download_as_bytearray())
-    except Exception:
+    except Exception as exc:
+        logger.warning("photo download failed | user=%s error=%s: %s",
+                       (user or {}).get("_id"), exc.__class__.__name__, exc)
         await message.reply_text("📷 Photo download nahi ho paayi. Dobara try kijiye.")
         return
 

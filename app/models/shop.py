@@ -67,6 +67,9 @@ def normalize_category(value: Optional[str]) -> str:
         "groceries": "kirana", "food": "bakery_food", "bakery": "bakery_food",
         "pharmacy": "medical", "chemist": "medical", "general": "general_store",
         "hardware_store": "hardware", "stationary": "stationery",
+        # web app (LocalMart UI) category keys
+        "vegetables": "kirana", "sabzi": "kirana", "dairy": "bakery_food",
+        "tailor": "clothing",
     }
     key = aliases.get(key, key)
     return key if key in CATEGORIES else "other"

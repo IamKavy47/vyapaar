@@ -9,6 +9,9 @@ from app.bot.keyboards import auth_keyboard
 from app.database.mongo import mongo
 from app.models.user import UserRole
 from app.services import auth_service
+from app.utils.errors import (
+    GENERIC_USER_MESSAGE, AppError, describe_unexpected, new_error_ref,
+)
 from app.utils.logging import bind_request_id, get_logger, new_request_id
 from app.utils.security import ai_limiter
 
@@ -126,6 +129,81 @@ def rate_limit_ai(func):
         return await func(update, context, *args, **kwargs)
 
     return wrapper
+
+
+def handle_errors(operation: str = ""):
+    """Turn any exception inside a handler into a reply the user can act on.
+
+    Without this, one bad callback payload kills the handler silently and the
+    customer is left staring at a chat that stopped responding. With it:
+
+    * an ``AppError`` shows its own message (plus a reference id when the user
+      cannot fix it themselves);
+    * anything else is a bug — the user gets a generic apology with a reference,
+      and the log gets the full traceback, the handler name, the Telegram id and
+      the callback payload that triggered it.
+
+    Apply it *below* ``@require_linked`` so the ``user`` argument still threads
+    through.
+    """
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+            op = operation or func.__name__
+            try:
+                return await func(update, context, *args, **kwargs)
+            except AppError as exc:
+                exc.operation = exc.operation or op
+                exc.context.setdefault("telegram_user_id", telegram_id(update))
+                exc.context.setdefault("handler", func.__name__)
+                if exc.actionable:
+                    logger.warning("handled error | %s", exc.debug_line())
+                else:
+                    logger.error("handled error | %s", exc.debug_line(), exc_info=exc.cause or exc)
+                await _reply_safely(update, exc.user_text())
+                return None
+            except Exception as exc:
+                ref = new_error_ref()
+                logger.exception(
+                    "unhandled handler error | %s",
+                    describe_unexpected(exc, operation=op, context={
+                        "ref": ref,
+                        "handler": func.__name__,
+                        "telegram_user_id": telegram_id(update),
+                        "callback_data": _callback_data(update),
+                        "message_text": _message_preview(update),
+                    }),
+                )
+                await _reply_safely(
+                    update,
+                    f"{GENERIC_USER_MESSAGE}\n\n🔎 Reference: {ref}",
+                )
+                return None
+
+        return wrapper
+
+    return decorator
+
+
+def _callback_data(update: Update) -> str:
+    query = getattr(update, "callback_query", None)
+    return getattr(query, "data", "") if query else ""
+
+
+def _message_preview(update: Update, limit: int = 80) -> str:
+    message = update.effective_message if hasattr(update, "effective_message") else None
+    text = (getattr(message, "text", "") or "") if message else ""
+    return text[:limit]
+
+
+async def _reply_safely(update: Update, text: str) -> None:
+    """Telling the user we failed must not itself fail."""
+    try:
+        if update.effective_message:
+            await update.effective_message.reply_text(text)
+    except Exception as exc:
+        logger.warning("could not deliver error message to user: %s", exc.__class__.__name__)
 
 
 async def resolve_actor(update: Update) -> Tuple[Optional[Dict], Optional[Dict]]:

@@ -8,13 +8,13 @@ from typing import Dict, List, Optional, Tuple
 from bson import ObjectId
 from app.config.settings import settings
 from app.database import mongo as m
-from app.models.merchant_match import MatchStatus
+from app.models.merchant_match import MatchStatus, build_match_document
 from app.models.product_request import RequestStatus, build_request_document
 from app.models.user import utcnow
 from app.schemas.intent import ProductIntent
 from app.schemas.match import MatchResult
-from app.services import demand_engine, merchant_matching, notification_service
-from app.utils.geo import humanize_distance
+from app.services import browse_service, demand_engine, merchant_matching, notification_service
+from app.utils.geo import from_geojson_point, haversine_meters, humanize_distance
 from app.utils.logging import get_logger, new_request_id
 
 logger = get_logger(__name__)
@@ -22,17 +22,96 @@ logger = get_logger(__name__)
 
 async def create_request(*, intent: ProductIntent, customer_id, telegram_user_id: Optional[int],
                          latitude: float, longitude: float, input_type: str = "text",
-                         raw_text: str = "", transcript: str = "") -> Dict:
+                         raw_text: str = "", transcript: str = "",
+                         max_radius_meters: Optional[int] = None) -> Dict:
+    if max_radius_meters is None:
+        # customer_id here is the user id (see recent_requests / history_command),
+        # which is exactly what get_search_radius expects.
+        from app.services.location_service import get_search_radius
+        max_radius_meters = await get_search_radius(customer_id)
     request_id = new_request_id()
     doc = build_request_document(
         request_id=request_id, customer_id=ObjectId(str(customer_id)),
         telegram_user_id=telegram_user_id, intent=intent.model_dump(),
         latitude=latitude, longitude=longitude, input_type=input_type,
-        raw_text=raw_text, transcript=transcript,
+        raw_text=raw_text, transcript=transcript, max_radius_meters=max_radius_meters,
     )
     await m.product_requests().insert_one(doc)
-    logger.info("request created | %s product=%s", request_id, doc.get("product"))
+    logger.info("request created | %s product=%s radius=%sm", request_id, doc.get("product"),
+                doc.get("max_radius_meters"))
     return doc
+
+
+async def create_reservation(*, item: Dict, shop: Dict, customer_id, telegram_user_id: Optional[int],
+                             customer_name: str, latitude: float, longitude: float,
+                             quantity: Optional[float] = None) -> Dict:
+    """A customer picked a specific item off a specific shop's shelf listing.
+
+    This is still a request, not an order. Vyapaar-Mitra takes no payment and
+    places no order: the merchant confirms the item is genuinely there, and the
+    customer walks over and buys it. Routing it through the same request/match
+    objects means one YES/NO loop, one demand signal and one audit trail for both
+    search and browse.
+    """
+    intent = ProductIntent(
+        intent="find_product",
+        product=item.get("product"),
+        category=shop.get("category") or "other",
+        quantity=int(quantity or item.get("quantity") or 1) or 1,
+        unit=item.get("unit") or "piece",
+        brand=item.get("brand"),
+        description="Reserved from the shop's own stock listing.",
+        confidence=1.0,          # the customer chose it by hand — nothing was inferred
+        provider="browse",
+    )
+    request = await create_request(
+        intent=intent, customer_id=customer_id, telegram_user_id=telegram_user_id,
+        latitude=latitude, longitude=longitude, input_type="browse",
+        raw_text=f"reserve:{item.get('product')}",
+    )
+    await m.product_requests().update_one(
+        {"request_id": request["request_id"]},
+        {"$set": {"source": "browse", "reserved_item_id": item.get("_id"),
+                  "reserved_shop_id": shop.get("_id")}},
+    )
+
+    distance = haversine_meters(
+        latitude, longitude,
+        *(from_geojson_point(shop.get("location")) or (latitude, longitude))
+    )
+    match_doc = build_match_document(
+        request_id=request["request_id"], merchant_id=shop["_id"],
+        distance_meters=distance, match_score=1.0,
+        score_breakdown={"source": "browse_reservation"},
+    )
+    result = await m.merchant_matches().insert_one(match_doc)
+    match_doc["_id"] = result.inserted_id
+
+    text = browse_service.reservation_message(
+        product=item.get("product") or "Item",
+        quantity=float(intent.quantity), unit=intent.unit,
+        customer_name=customer_name or "Ek customer",
+        distance_text=humanize_distance(distance),
+        price=item.get("price"),
+    )
+    sent = await notification_service.send_message(
+        shop.get("telegram_user_id"), text,
+        reply_markup=notification_service.merchant_response_markup(match_doc["_id"]),
+        kind="reservation_request",
+    )
+    if sent:
+        await merchant_matching.mark_notified(match_doc["_id"])
+        await m.shops().update_one({"_id": shop["_id"]}, {"$inc": {"notified_count": 1}})
+    await m.product_requests().update_one(
+        {"request_id": request["request_id"]},
+        {"$set": {
+            "status": RequestStatus.OFFERED.value if sent else RequestStatus.MATCHING.value,
+            "matched_count": 1, "updated_at": utcnow(),
+        }},
+    )
+    logger.info("reservation created | %s shop=%s item=%s notified=%s",
+                request["request_id"], shop.get("shop_name"), item.get("product"), sent)
+    return {"request": request, "match": match_doc, "notified": sent}
 
 
 async def get_request(request_id: str) -> Optional[Dict]:
@@ -124,16 +203,28 @@ async def handle_merchant_response(match_id, *, accepted: bool,
 
     if accepted:
         await set_status(match["request_id"], RequestStatus.MATCHED.value)
+        coordinates = from_geojson_point((shop or {}).get("location"))
+        latitude, longitude = coordinates if coordinates else (None, None)
         text = notification_service.format_customer_match(
             (shop or {}).get("shop_name", "Shop"),
             humanize_distance(match.get("distance_meters") or 0),
             request.get("product") or "Product",
             price,
             (shop or {}).get("phone"),
+            address=(shop or {}).get("address"),
+            latitude=latitude,
+            longitude=longitude,
         )
         await notification_service.send_message(
             request.get("telegram_user_id"), text, kind="customer_match"
         )
+        # A tappable pin in the chat beats a URL for a first-time smartphone user.
+        if latitude is not None and longitude is not None:
+            await notification_service.send_location(
+                request.get("telegram_user_id"), latitude, longitude,
+                title=(shop or {}).get("shop_name", "Shop"),
+                address=(shop or {}).get("address"),
+            )
     else:
         await merchant_matching.set_cooldown(match["merchant_id"], request.get("product") or "")
 

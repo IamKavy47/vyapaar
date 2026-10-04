@@ -34,6 +34,7 @@ class SarvamSTTProvider(STTProvider):
         files = {"file": (f"voice.{suffix}", audio_bytes, mime_type)}
         data = {
             "model": self.model,
+            "mode": "transcribe",
             "language_code": language_code or settings.SARVAM_LANGUAGE,
         }
         try:
@@ -46,7 +47,8 @@ class SarvamSTTProvider(STTProvider):
         except httpx.HTTPError as exc:
             raise ProviderError(self.name, f"network error: {exc.__class__.__name__}") from exc
         if resp.status_code >= 400:
-            raise ProviderError(self.name, f"HTTP {resp.status_code}")
+            detail = resp.text[:500].replace("\n", " ")
+            raise ProviderError(self.name, f"HTTP {resp.status_code}: {detail}")
         payload = resp.json()
         transcript = (payload.get("transcript") or payload.get("text") or "").strip()
         if not transcript:

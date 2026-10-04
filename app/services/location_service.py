@@ -3,6 +3,7 @@ from typing import Dict, Optional, Tuple
 
 from bson import ObjectId
 
+from app.config.settings import settings
 from app.database import mongo as m
 from app.models.user import utcnow
 from app.utils.geo import from_geojson_point, to_geojson_point, valid_coordinates
@@ -61,3 +62,31 @@ async def get_shop_location(user_id) -> Optional[Tuple[float, float]]:
 
 def location_of(doc: Dict) -> Optional[Tuple[float, float]]:
     return from_geojson_point((doc or {}).get("location"))
+
+
+def clamp_search_radius(meters) -> int:
+    """Keep a customer's range inside sane bounds, whatever they typed."""
+    try:
+        value = int(float(meters))
+    except (TypeError, ValueError):
+        value = settings.SEARCH_RADIUS_DEFAULT_METERS
+    return max(settings.SEARCH_RADIUS_MIN_METERS, min(settings.SEARCH_RADIUS_MAX_METERS, value))
+
+
+async def get_search_radius(user_id) -> int:
+    """A customer's own search/browse range. 5km by default, until they change it."""
+    doc = await m.customers().find_one({"user_id": ObjectId(str(user_id))})
+    value = (doc or {}).get("search_radius_meters")
+    return clamp_search_radius(value) if value else settings.SEARCH_RADIUS_DEFAULT_METERS
+
+
+async def set_search_radius(user_id, meters) -> int:
+    """Persist a new range. Returns the clamped value actually stored."""
+    clamped = clamp_search_radius(meters)
+    await m.customers().update_one(
+        {"user_id": ObjectId(str(user_id))},
+        {"$set": {"search_radius_meters": clamped, "updated_at": utcnow()}},
+        upsert=True,
+    )
+    logger.info("search radius updated | user=%s radius=%dm", user_id, clamped)
+    return clamped

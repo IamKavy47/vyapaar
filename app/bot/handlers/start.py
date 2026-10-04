@@ -50,10 +50,42 @@ async def _menu_for(update: Update, user) -> None:
         )
 
 
+async def _handle_web_link(update: Update, raw_token: str) -> None:
+    """``/start web_<token>`` — a logged-in web user connecting their Telegram.
+
+    The token is created by the web app (GET /api/v1/auth/telegram-link) and
+    carries the web account's user id; here we attach this Telegram account to
+    it. Passwords still never pass through chat.
+    """
+    from app.services import auth_service, notification_service  # avoid cycle
+
+    tg_id = update.effective_user.id if update.effective_user else None
+    try:
+        token_doc = await auth_service.consume_web_link_token(raw_token)
+        user = await auth_service.link_telegram_account(
+            token_doc["web_user_id"], tg_id,
+        )
+    except auth_service.AuthError as exc:
+        await update.effective_message.reply_text(f"⚠️ {exc}")
+        return
+    await notification_service.send_message(
+        tg_id,
+        "✅ Telegram connected to your web account!\n\n"
+        f"👤 {user.get('full_name')}\n"
+        "Ab aapko requests aur jawab yahan bhi milenge.",
+        kind="account_linked",
+    )
+    await _menu_for(update, user)
+
+
 @with_request_id
 @require_db
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     states.clear_mode(context)
+    args = getattr(context, "args", None) or []
+    if args and str(args[0]).startswith("web_"):
+        await _handle_web_link(update, str(args[0])[4:])
+        return
     user = await current_user(update)
     if user:
         await _menu_for(update, user)

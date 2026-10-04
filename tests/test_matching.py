@@ -79,3 +79,29 @@ def test_new_shop_gets_neutral_history():
 
 def test_responsive_shop_scores_above_neutral():
     assert response_rate({"notified_count": 10, "accepted_count": 8, "declined_count": 2}) > 0.7
+
+
+def test_radius_steps_reuses_default_progression_within_ceiling():
+    from app.services.merchant_matching import _radius_steps_for
+    steps = _radius_steps_for(5000)
+    assert steps == settings.radius_steps
+
+
+def test_radius_steps_appends_customer_ceiling_above_defaults():
+    from app.services.merchant_matching import _radius_steps_for
+    steps = _radius_steps_for(10000)
+    assert steps[-1] == 10000
+    assert steps == sorted(set(steps))
+
+
+def test_radius_steps_trims_defaults_above_a_narrower_ceiling():
+    from app.services.merchant_matching import _radius_steps_for
+    steps = _radius_steps_for(2000)
+    assert max(steps) == 2000
+    assert 5000 not in steps
+
+
+def test_radius_steps_handles_ceiling_below_smallest_default():
+    from app.services.merchant_matching import _radius_steps_for
+    steps = _radius_steps_for(300)
+    assert steps == [300]

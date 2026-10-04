@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 
 from app.bot import keyboards, states
 from app.config.settings import settings
-from app.bot.middleware import current_shop, require_db, require_linked, with_request_id
+from app.bot.middleware import current_shop, handle_errors, require_db, require_linked, with_request_id
 from app.database import mongo as m
 from app.models.merchant_match import MatchStatus
 from app.models.shop import CATEGORY_CAPABILITIES, category_label, normalize_category
@@ -110,6 +110,7 @@ async def requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE, u
 @with_request_id
 @require_db
 @require_linked(role=UserRole.SHOPKEEPER.value)
+@handle_errors("merchant.response_callback")
 async def merchant_response_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user) -> None:
     """Handles mr:yes:<match_id> and mr:no:<match_id>."""
     query = update.callback_query

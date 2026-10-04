@@ -21,7 +21,7 @@ from app.models.shop import (
 )
 from app.models.user import utcnow
 from app.schemas.match import MatchCandidate
-from app.utils.geo import haversine_meters
+from app.utils.geo import from_geojson_point, haversine_meters
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -129,8 +129,21 @@ async def _cooled_down_ids(product: Optional[str]) -> Set[str]:
     return {str(doc["merchant_id"]) async for doc in cursor}
 
 
+def _radius_steps_for(max_radius_meters: int) -> List[int]:
+    """Expansion steps up to a ceiling that may exceed the default 5km.
+
+    Reuses the configured 500m/1km/2km/5km progression for anything within it,
+    then appends the customer's own ceiling as the final step so a 10km or 20km
+    preference still gets a sensible last hop instead of jumping straight there.
+    """
+    steps = [s for s in settings.radius_steps if s <= max_radius_meters]
+    if not steps or steps[-1] != max_radius_meters:
+        steps.append(max_radius_meters)
+    return sorted(set(steps))
+
+
 async def find_candidates(request: Dict, *, limit: Optional[int] = None) -> Dict:
-    """Geospatial search with automatic radius expansion (500m -> 1 -> 2 -> 5km)."""
+    """Geospatial search with automatic radius expansion (500m -> ... -> customer's range)."""
     limit = limit or settings.MAX_MERCHANTS_PER_REQUEST
     latitude, longitude = request["latitude"], request["longitude"]
     needed = need_capabilities(request)
@@ -141,12 +154,12 @@ async def find_candidates(request: Dict, *, limit: Optional[int] = None) -> Dict
         async for doc in m.merchant_matches().find({"request_id": request["request_id"]})
     }
 
-    chosen_radius = settings.MATCH_RADIUS_METERS
+    max_radius = int(request.get("max_radius_meters") or settings.MAX_MATCH_RADIUS_METERS)
+    steps = _radius_steps_for(max_radius)
+    chosen_radius = steps[0]
     scored: List[Dict] = []
 
-    for radius in settings.radius_steps:
-        if radius < settings.MATCH_RADIUS_METERS:
-            continue
+    for radius in steps:
         chosen_radius = radius
         pipeline = [
             {
@@ -287,10 +300,13 @@ async def accepted_offers(request_id: str) -> List[Dict]:
     offers = []
     async for match in cursor:
         shop = await m.shops().find_one({"_id": match["merchant_id"]})
+        coordinates = from_geojson_point((shop or {}).get("location"))
         offers.append({
             "shop_name": (shop or {}).get("shop_name", "Shop"),
             "phone": (shop or {}).get("phone"),
             "address": (shop or {}).get("address"),
+            "latitude": coordinates[0] if coordinates else None,
+            "longitude": coordinates[1] if coordinates else None,
             "distance_meters": match.get("distance_meters"),
             "price": match.get("price"),
             "status": match.get("status"),

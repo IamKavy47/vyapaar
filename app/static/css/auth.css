@@ -117,3 +117,41 @@ button:active { transform: translateY(1px); }
 .summary dd { margin: 0; font-weight: 600; }
 
 .foot { margin-top: 18px; text-align: center; font-size: 12px; color: var(--muted); }
+
+/* ---- Shopkeeper registration fields ---- */
+.shop-fields {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+}
+.shop-fields.hidden { display: none; }
+
+.section-label {
+  margin: 4px 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.optional { font-weight: 400; color: var(--muted); }
+
+button.secondary {
+  width: 100%;
+  margin-top: 4px;
+  padding: 11px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+}
+button.secondary:disabled { opacity: 0.6; cursor: progress; }
+
+.field-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.field-status.ok { color: var(--accent); font-weight: 600; }
+.field-status.warn { color: var(--danger); }

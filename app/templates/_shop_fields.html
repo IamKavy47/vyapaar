@@ -1,0 +1,50 @@
+{# Shopkeeper-only registration fields.
+   Included by register.html and telegram_link.html. `prefix` keeps element ids
+   unique when two forms live on the same page (the login/register tabs).
+
+   Category and location are asked for here, at registration, because neither
+   changes once a shop exists — and a shop with neither cannot be matched to
+   anyone, which is the one failure a new merchant would never think to debug. #}
+<div class="shop-fields{% if role_hint != 'shopkeeper' %} hidden{% endif %}"
+     id="{{ prefix }}shop_fields" data-shop-fields>
+
+  <p class="section-label">🏪 About your shop</p>
+
+  <label for="{{ prefix }}shop_name">Shop name</label>
+  <input id="{{ prefix }}shop_name" name="shop_name" type="text"
+         placeholder="e.g. Sharma Hardware" />
+  <p class="hint">Leave blank to use your own name.</p>
+
+  <label for="{{ prefix }}shop_category">Shop category</label>
+  <select id="{{ prefix }}shop_category" name="shop_category">
+    <option value="">Select a category…</option>
+    {% for value, label in categories %}
+    <option value="{{ value }}">{{ label }}</option>
+    {% endfor %}
+  </select>
+  <p class="hint">This decides which customer requests reach you.</p>
+
+  <label for="{{ prefix }}address">Shop address <span class="optional">(optional)</span></label>
+  <input id="{{ prefix }}address" name="address" type="text"
+         placeholder="Shop no., street, landmark" />
+
+  <p class="section-label">📍 Shop location</p>
+  <p class="hint">
+    Customers are matched by distance, so an accurate pin matters more than
+    anything else on this form. Stand inside or outside your shop and tap below.
+  </p>
+
+  <input type="hidden" id="{{ prefix }}latitude" name="latitude" value="" />
+  <input type="hidden" id="{{ prefix }}longitude" name="longitude" value="" />
+
+  <button type="button" class="secondary" data-locate="{{ prefix }}">
+    📍 Use my current location
+  </button>
+  <p class="field-status" id="{{ prefix }}location_status" data-status="{{ prefix }}">
+    Not captured yet.
+  </p>
+  <p class="hint">
+    Can't share it now? You can still register, then send your location once from
+    the Telegram bot — but requests won't reach you until you do.
+  </p>
+</div>

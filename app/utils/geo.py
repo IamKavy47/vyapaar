@@ -37,3 +37,23 @@ def humanize_distance(meters: float) -> str:
     if meters < 1000:
         return f"~{int(round(meters / 10.0) * 10)}m"
     return f"~{meters / 1000.0:.1f}km"
+
+
+def navigation_link(latitude: float, longitude: float) -> str:
+    """Turn-by-turn directions from wherever the user currently is.
+
+    Google Maps' universal URL opens the native app on Android and iOS and falls
+    back to the browser everywhere else, so one link covers every customer.
+    """
+    return (
+        "https://www.google.com/maps/dir/?api=1"
+        f"&destination={float(latitude):.6f},{float(longitude):.6f}"
+    )
+
+
+def map_pin_link(latitude: float, longitude: float) -> str:
+    """A dropped pin — 'where is this shop', without starting navigation."""
+    return (
+        "https://www.google.com/maps/search/?api=1"
+        f"&query={float(latitude):.6f},{float(longitude):.6f}"
+    )

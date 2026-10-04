@@ -28,10 +28,11 @@ def auth_keyboard(url: str) -> InlineKeyboardMarkup:
 def customer_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            ["🔎 Find Product", "🎤 Voice Search"],
-            ["📷 Photo Search", "📍 My Location"],
-            ["🧾 My Requests", "📒 My Khata"],
-            ["⚙️ Profile"],
+            ["🔎 Find Product", "🛒 Browse Nearby"],
+            ["🎤 Voice Search", "📷 Photo Search"],
+            ["🧾 My Requests", "📍 My Location"],
+            ["📏 Range", "📒 My Khata"],
+            ["⚙️ Profile", "🚪 Logout"],
         ],
         resize_keyboard=True,
     )
@@ -43,7 +44,7 @@ def merchant_menu() -> ReplyKeyboardMarkup:
             ["🏪 My Shop", "📦 Inventory"],
             ["🔔 Requests", "📊 Demand"],
             ["📒 Khata", "📍 Location"],
-            ["⚙️ Settings"],
+            ["⚙️ Settings", "🚪 Logout"],
         ],
         resize_keyboard=True,
     )
@@ -111,3 +112,96 @@ def repeat_request_keyboard(request_ids: List[str], labels: List[str]) -> Option
         for rid, label in zip(request_ids[:5], labels[:5])
     ]
     return InlineKeyboardMarkup(rows) if rows else None
+
+
+def logout_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Logging out unlinks Telegram, so it is worth one deliberate tap."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚪 Yes, log me out", callback_data="logout:confirm")],
+        [InlineKeyboardButton("↩️ Cancel", callback_data="logout:cancel")],
+    ])
+
+
+def browse_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧺 What's in stock nearby", callback_data="brs:stock")],
+        [InlineKeyboardButton("🏪 Shops around me", callback_data="brs:shops")],
+        [InlineKeyboardButton("🏷️ Browse by category", callback_data="brs:cats")],
+    ])
+
+
+def browse_category_keyboard(rows: List[dict]) -> InlineKeyboardMarkup:
+    """Only categories that actually have shops nearby, with their counts."""
+    buttons, row = [], []
+    for index, entry in enumerate(rows[:12], start=1):
+        label = f"{entry['label']} ({entry['shops']})"
+        row.append(InlineKeyboardButton(label, callback_data=f"brs:cat:{entry['category']}"))
+        if index % 2 == 0:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="brs:menu")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def browse_shops_keyboard(shops: List[dict]) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            f"🏪 {shop['shop_name']} · {int(shop['distance_meters'])}m",
+            callback_data=f"brs:shop:{shop['shop_id']}",
+        )]
+        for shop in shops[:8]
+    ]
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="brs:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def browse_products_keyboard(products: List[dict]) -> InlineKeyboardMarkup:
+    """One reserve button per listed item, numbered to match the message text."""
+    rows = []
+    for index, entry in enumerate(products[:8], start=1):
+        price = f" ₹{entry['price']:g}" if entry.get("price") is not None else ""
+        rows.append([InlineKeyboardButton(
+            f"🛒 {index}. {entry['product'][:22]}{price}",
+            callback_data=f"brs:buy:{entry['item_id']}",
+        )])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="brs:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def shop_actions_keyboard(shop: dict) -> InlineKeyboardMarkup:
+    """Navigation is a URL button so it opens Maps directly, no copy-paste."""
+    rows = []
+    if shop.get("navigation_url"):
+        rows.append([InlineKeyboardButton("🧭 Navigate to shop", url=shop["navigation_url"])])
+    rows.append([InlineKeyboardButton("📦 See what's in stock",
+                                      callback_data=f"brs:stock_shop:{shop['shop_id']}")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="brs:shops")])
+    return InlineKeyboardMarkup(rows)
+
+
+def navigation_keyboard(navigation_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🧭 Navigate", url=navigation_url)]])
+
+
+def range_keyboard(current_meters: int, presets: List[int]) -> InlineKeyboardMarkup:
+    """Preset distances plus a way to type an exact one.
+
+    A checkmark on the active preset doubles as a confirmation that the setting
+    actually took — otherwise a tap with no visible change reads as broken.
+    """
+    def label(meters: int) -> str:
+        text = f"{meters // 1000}km" if meters >= 1000 else f"{meters}m"
+        return f"✅ {text}" if meters == current_meters else text
+
+    rows, row = [], []
+    for index, meters in enumerate(presets, start=1):
+        row.append(InlineKeyboardButton(label(meters), callback_data=f"rng:{meters}"))
+        if index % 3 == 0:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("✏️ Enter exact distance", callback_data="rng:custom")])
+    return InlineKeyboardMarkup(rows)

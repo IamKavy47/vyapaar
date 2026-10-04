@@ -51,6 +51,8 @@
       <option value="shopkeeper" {% if role_hint == 'shopkeeper' %}selected{% endif %}>Shopkeeper</option>
     </select>
 
+    {% include "_shop_fields.html" with context %}
+
     <button type="submit">Register &amp; link Telegram</button>
   </form>
 </div>

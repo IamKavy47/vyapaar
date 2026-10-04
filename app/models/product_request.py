@@ -14,6 +14,7 @@ class RequestStatus(str, Enum):
     MATCHING = "MATCHING"
     OFFERED = "OFFERED"
     MATCHED = "MATCHED"
+    COMPLETED = "COMPLETED"  # customer picked a winning shop (web app)
     EXPIRED = "EXPIRED"
     CANCELLED = "CANCELLED"
 
@@ -27,7 +28,7 @@ class InputType(str, Enum):
 def build_request_document(
     *, request_id: str, customer_id, telegram_user_id: Optional[int], intent: Dict,
     latitude: float, longitude: float, input_type: str = "text",
-    raw_text: str = "", transcript: str = "",
+    raw_text: str = "", transcript: str = "", max_radius_meters: Optional[int] = None,
 ) -> Dict:
     now = utcnow()
     return {
@@ -52,6 +53,10 @@ def build_request_document(
         "location": to_geojson_point(latitude, longitude),
         "latitude": latitude,
         "longitude": longitude,
+        # The ceiling this particular search may expand out to — the customer's
+        # own range preference, captured at request time so a later change to
+        # their setting never rewrites the history of a search already sent out.
+        "max_radius_meters": int(max_radius_meters) if max_radius_meters else None,
         "status": RequestStatus.CREATED.value,
         "matched_count": 0,
         "created_at": now,
