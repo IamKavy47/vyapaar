@@ -23,8 +23,22 @@ export function LocationPicker({
   };
 
   const useGps = async () => {
-    const found = await location.locate();
-    if (!found) toast.error("Location permission allow karo");
+    const coordinates = await location.locate();
+    if (!coordinates) {
+      toast.error(
+        navigator.geolocation
+          ? "Location permission allow karo, aur browser me HTTPS use karo"
+          : "Is browser/device par location available nahi hai",
+      );
+      return;
+    }
+    if (onSave) {
+      try {
+        await onSave(coordinates.lat, coordinates.lng);
+      } catch {
+        // The save handler displays the API error to the user.
+      }
+    }
   };
 
   return (

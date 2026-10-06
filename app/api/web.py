@@ -457,7 +457,7 @@ async def web_update_shop_location(
     return {"ok": True}
 
 
-@router.patch("/profile/location")
+@router.api_route("/profile/location", methods=["PATCH", "POST"])
 async def web_update_customer_location(
     body: UpdateCustomerLocationBody, user: dict = Depends(require_user),
 ):

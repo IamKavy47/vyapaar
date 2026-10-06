@@ -7,7 +7,7 @@ interface LocationState {
   lng: number | null;
   label: string;
   locating: boolean;
-  locate: () => Promise<boolean>;
+  locate: () => Promise<{ lat: number; lng: number } | null>;
   setManual: (lat: number, lng: number, label?: string) => void;
 }
 
@@ -44,9 +44,9 @@ export function LocationProvider({ children }: { children: ReactNode }) {
   const [locating, setLocating] = useState(false);
 
   const locate = useCallback(() => {
-    if (!navigator.geolocation) return Promise.resolve(false);
+    if (!navigator.geolocation) return Promise.resolve(null);
     setLocating(true);
-    return new Promise<boolean>((resolve) => {
+    return new Promise<{ lat: number; lng: number } | null>((resolve) => {
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
           const { latitude, longitude } = pos.coords;
@@ -62,11 +62,11 @@ export function LocationProvider({ children }: { children: ReactNode }) {
             label: city ?? "Your location",
           });
           setLocating(false);
-          resolve(true);
+          resolve({ lat: latitude, lng: longitude });
         },
         () => {
           setLocating(false);
-          resolve(false);
+          resolve(null);
         },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 },
       );

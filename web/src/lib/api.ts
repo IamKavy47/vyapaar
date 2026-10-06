@@ -265,7 +265,7 @@ export const api = {
       apiFetch("/profile/shop/location", { method: "PATCH", body }),
     ),
     updateLocation: M<{ lat: number; lng: number }, { ok: boolean }>((body) =>
-      apiFetch("/profile/location", { method: "PATCH", body }),
+      apiFetch("/profile/location", { method: "POST", body }),
     ),
   },
 
