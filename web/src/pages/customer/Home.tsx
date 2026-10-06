@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import { Search, Mic, Camera, MapPin, ChevronRight, Flame, BadgeCheck } from "lucide-react";
 import { api as trpc } from "@/lib/api";
 import { useLocation } from "@/lib/location";
@@ -40,6 +41,12 @@ export default function Home() {
     navigate(`/search?q=${encodeURIComponent("photo se pehchana gaya item")}&type=image`);
   };
 
+  const requestLocation = async () => {
+    if (!(await location.locate())) {
+      toast.error("Location permission allow karo");
+    }
+  };
+
   const topShops = useMemo(() => (shops.data ?? []).slice(0, 6), [shops.data]);
   const ticker = useMemo(
     () => (trending.data ?? []).filter((d) => d.unavailable > 0).slice(0, 8),
@@ -52,12 +59,13 @@ export default function Home() {
       <div className="-mx-4 sm:-mx-6 bg-brand-yellow rounded-b-[36px] border-b-2 border-brand-ink/10 px-4 sm:px-6 pt-5 pb-7 relative overflow-hidden">
         <div className="flex items-center justify-between">
           <button
-            onClick={location.locate}
+            onClick={requestLocation}
+            disabled={location.locating}
             className="flex items-center gap-1.5 rounded-full border-2 border-brand-ink bg-brand-cream px-3.5 py-2 shadow-sticker-sm active:translate-y-[2px] active:shadow-none transition-all"
           >
             <MapPin className="w-4 h-4 text-brand-green" strokeWidth={2.6} />
             <span className="text-[12.5px] font-extrabold max-w-[160px] truncate">
-              {location.locating ? "Dhundh rahe…" : location.label}
+              {location.locating ? "Dhundh rahe…" : location.lat != null ? location.label : "Location set karo"}
             </span>
           </button>
           <span className="font-display text-[13px] text-brand-ink/70">नमस्ते 🙏</span>

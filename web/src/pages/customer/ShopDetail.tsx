@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
-import { BadgeCheck, MapPin, Phone, Navigation, PackageOpen } from "lucide-react";
+import { BadgeCheck, MapPin, Phone, Navigation, PackageOpen, CircleCheck } from "lucide-react";
 import { api as trpc } from "@/lib/api";
 import { useLocation } from "@/lib/location";
 import { TopBar } from "@/components/shell";
@@ -11,10 +12,12 @@ export default function ShopDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const [reservedItem, setReservedItem] = useState<string | null>(null);
   const reserve = trpc.request.reserve.useMutation({
-    onSuccess: (result) => {
-      toast.success("Request dukaan ko bhej di. Confirmation ka wait karo.");
-      navigate(`/search?rid=${encodeURIComponent(result.requestId)}&q=${encodeURIComponent("stock request")}`);
+    onSuccess: (_result, variables) => {
+      const item = shop.data?.inventory.find((candidate) => candidate.id === variables.itemId);
+      setReservedItem(item?.name ?? "Item");
+      toast.success("Dukaan ko buy request bhej di. Confirmation ka wait karo.");
     },
     onError: (error) => toast.error(error.message),
   });
@@ -75,14 +78,20 @@ export default function ShopDetail() {
         </div>
 
         <div className="grid grid-cols-2 gap-2.5 mt-5">
-          <a
-            href={`https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-full border-2 border-brand-ink bg-brand-ink text-brand-yellow text-[13px] font-extrabold py-3 flex items-center justify-center gap-2 active:translate-y-[2px] transition-all"
-          >
-            <Navigation className="w-4 h-4" /> Route
-          </a>
+          {s.lat != null && s.lng != null ? (
+            <a
+              href={`https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-full border-2 border-brand-ink bg-brand-ink text-brand-yellow text-[13px] font-extrabold py-3 flex items-center justify-center gap-2 active:translate-y-[2px] transition-all"
+            >
+              <Navigation className="w-4 h-4" /> Route
+            </a>
+          ) : (
+            <span className="rounded-full border-2 border-brand-ink/15 bg-background text-muted-foreground text-[13px] font-extrabold py-3 flex items-center justify-center gap-2">
+              <MapPin className="w-4 h-4" /> Location unavailable
+            </span>
+          )}
           {s.phone && (
             <a
               href={`tel:${s.phone}`}
@@ -93,6 +102,28 @@ export default function ShopDetail() {
           )}
         </div>
       </section>
+
+      {reservedItem && s.lat != null && s.lng != null && (
+        <section className="mt-4 rounded-[28px] border-2 border-brand-green bg-[#00914612] p-5">
+          <div className="flex items-start gap-3">
+            <CircleCheck className="mt-0.5 h-6 w-6 shrink-0 text-brand-green" />
+            <div>
+              <h2 className="font-display text-[17px]">Buy request ready</h2>
+              <p className="mt-1 text-[12px] font-bold text-brand-ink/70">
+                {reservedItem} ke liye dukaan ko message bhej diya. Confirm hone ke baad yahan se route kholo.
+              </p>
+            </div>
+          </div>
+          <a
+            href={`https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-4 flex items-center justify-center gap-2 rounded-full border-2 border-brand-ink bg-brand-ink py-3 text-[13px] font-extrabold text-brand-yellow"
+          >
+            <Navigation className="h-4 w-4" /> Dukaan ka rasta kholo
+          </a>
+        </section>
+      )}
 
       {/* inventory */}
       <section className="mt-7">
@@ -147,11 +178,12 @@ export default function ShopDetail() {
                     onClick={() => {
                       if (location.lat == null || location.lng == null) {
                         toast.error("Pehle apni location allow karo");
-                        location.locate();
+                        void location.locate();
                         return;
                       }
                       reserve.mutate({
                         itemId: it.id,
+                        quantity: 1,
                         lat: location.lat,
                         lng: location.lng,
                       });
@@ -159,7 +191,7 @@ export default function ShopDetail() {
                     disabled={reserve.isPending}
                     className="rounded-full border-2 border-brand-green bg-brand-green px-3 py-2 text-[11px] font-extrabold text-brand-cream disabled:opacity-50"
                   >
-                    {reserve.isPending ? "Bhej rahe…" : "Order karo"}
+                    {reserve.isPending ? "Bhej rahe…" : "Buy / reserve"}
                   </button>
                 )}
               </div>

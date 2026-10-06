@@ -1,15 +1,33 @@
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+
 interface LocationState {
   lat: number | null;
   lng: number | null;
   label: string;
   locating: boolean;
-  locate: () => void;
-  setManual: (lat: number, lng: number) => void;
+  locate: () => Promise<boolean>;
+  setManual: (lat: number, lng: number, label?: string) => void;
 }
 
 const Ctx = createContext<LocationState | null>(null);
+
+async function cityForCoordinates(lat: number, lng: number): Promise<string | null> {
+  const params = new URLSearchParams({
+    format: "jsonv2",
+    zoom: "10",
+    addressdetails: "1",
+    lat: String(lat),
+    lon: String(lng),
+  });
+  const response = await fetch(`https://nominatim.openstreetmap.org/reverse?${params}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) return null;
+  const data = (await response.json()) as { address?: Record<string, string> };
+  const address = data.address;
+  return address?.city ?? address?.town ?? address?.village ?? address?.municipality ?? null;
+}
 
 export function LocationProvider({ children }: { children: ReactNode }) {
   const [loc, setLoc] = useState<{ lat: number | null; lng: number | null; label: string }>({
@@ -20,19 +38,36 @@ export function LocationProvider({ children }: { children: ReactNode }) {
   const [locating, setLocating] = useState(false);
 
   const locate = useCallback(() => {
-    if (!navigator.geolocation) return;
+    if (!navigator.geolocation) return Promise.resolve(false);
     setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLoc({ lat: pos.coords.latitude, lng: pos.coords.longitude, label: "Your location" });
-        setLocating(false);
-      },
-      () => setLocating(false),
-      { timeout: 8000 },
-    );
+    return new Promise<boolean>((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const { latitude, longitude } = pos.coords;
+          let city: string | null = null;
+          try {
+            city = await cityForCoordinates(latitude, longitude);
+          } catch {
+            // Coordinates are still useful if reverse geocoding is unavailable.
+          }
+          setLoc({
+            lat: latitude,
+            lng: longitude,
+            label: city ?? "Your location",
+          });
+          setLocating(false);
+          resolve(true);
+        },
+        () => {
+          setLocating(false);
+          resolve(false);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 },
+      );
+    });
   }, []);
-  const setManual = useCallback((lat: number, lng: number) => {
-    setLoc({ lat, lng, label: "Manual location" });
+  const setManual = useCallback((lat: number, lng: number, label = "Manual location") => {
+    setLoc({ lat, lng, label });
   }, []);
 
   const value = useMemo(
