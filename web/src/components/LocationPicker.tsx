@@ -43,7 +43,7 @@ export function LocationPicker({
       <LocationMapPicker />
       <div className="flex gap-2 mt-3">
         <button onClick={useGps} disabled={location.locating} className="flex-1 rounded-full border-2 border-brand-ink bg-background py-2.5 text-xs font-extrabold disabled:opacity-60">
-          <LocateFixed className="inline w-4 h-4 mr-1" /> {location.locating ? "Location mil rahi…" : location.lat != null ? location.label : "GPS location"}
+          <LocateFixed className="inline w-4 h-4 mr-1" /> {location.locating ? "Location mil rahi…" : "Fetch location automatically"}
         </button>
         <button onClick={save} className="flex-1 rounded-full border-2 border-brand-green bg-brand-green text-brand-cream py-2.5 text-xs font-extrabold">
           Save location

@@ -46,6 +46,7 @@ from app.services import (
     notification_service, search_service,
 )
 from app.services.auth_service import AuthError
+from app.services.location_service import update_customer_location
 from app.utils.errors import DatabaseError
 from app.utils.geo import from_geojson_point, haversine_meters
 from app.utils.logging import get_logger
@@ -311,6 +312,10 @@ class UpdateShopLocationBody(BaseModel):
     lng: float = Field(ge=-180, le=180)
 
 
+class UpdateCustomerLocationBody(UpdateShopLocationBody):
+    pass
+
+
 class ReserveBody(BaseModel):
     itemId: str
     quantity: Optional[float] = Field(default=None, gt=0)
@@ -321,12 +326,19 @@ class ReserveBody(BaseModel):
 @router.get("/profile")
 async def web_profile(user: dict = Depends(require_user)):
     shop = await m.shops().find_one({"user_id": user["_id"]})
+    customer = await m.customers().find_one({"user_id": user["_id"]})
+    customer_location = from_geojson_point((customer or {}).get("location"))
     role = user.get("role")
     app_role = role if role in {UserRole.CUSTOMER.value, UserRole.SHOPKEEPER.value} else None
     return {
         "appRole": app_role,
         "shop": shop_public(shop, inventory_count=await inventory_service.count_items(shop["_id"]))
         if shop else None,
+        "location": (
+            {"lat": customer_location[0], "lng": customer_location[1]}
+            if customer_location
+            else None
+        ),
     }
 
 
@@ -442,6 +454,16 @@ async def web_update_shop_location(
         {"$set": {"location": {"type": "Point", "coordinates": [body.lng, body.lat]},
                   "updated_at": utcnow()}},
     )
+    return {"ok": True}
+
+
+@router.patch("/profile/location")
+async def web_update_customer_location(
+    body: UpdateCustomerLocationBody, user: dict = Depends(require_user),
+):
+    if user.get("role") != UserRole.CUSTOMER.value:
+        _error(403, "Only customer accounts have a personal location")
+    await update_customer_location(user["_id"], body.lat, body.lng)
     return {"ok": True}
 
 

@@ -15,6 +15,7 @@ export default function Account() {
   const profile = trpc.profile.get.useQuery();
   const telegramLink = trpc.auth.telegramLink.useMutation();
   const updateShopLocation = trpc.profile.updateShopLocation.useMutation();
+  const updateCustomerLocation = trpc.profile.updateLocation.useMutation();
   const [tgBusy, setTgBusy] = useState(false);
 
   const connectTelegram = async () => {
@@ -41,6 +42,11 @@ export default function Account() {
     await updateShopLocation.mutateAsync({ lat, lng });
     await utils.profile.get.invalidate();
     toast.success("Dukaan ki location update ho gayi");
+  };
+  const saveCustomerLocation = async (lat: number, lng: number) => {
+    await updateCustomerLocation.mutateAsync({ lat, lng });
+    await utils.profile.get.invalidate();
+    toast.success("Aapki location save ho gayi");
   };
 
   return (
@@ -84,7 +90,7 @@ export default function Account() {
       )}
       <LocationPicker
         shopMode={role === "shopkeeper"}
-        onSave={role === "shopkeeper" && shop ? saveShopLocation : undefined}
+        onSave={role === "shopkeeper" && shop ? saveShopLocation : saveCustomerLocation}
       />
 
       {/* actions */}

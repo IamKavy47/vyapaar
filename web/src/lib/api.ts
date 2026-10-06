@@ -232,7 +232,14 @@ export const api = {
   },
 
   profile: {
-    get: Q<void, { appRole: "customer" | "shopkeeper" | null; shop: Shop | null }>(
+    get: Q<
+      void,
+      {
+        appRole: "customer" | "shopkeeper" | null;
+        shop: Shop | null;
+        location: { lat: number; lng: number } | null;
+      }
+    >(
       "profile.get",
       () => apiFetch("/profile"),
     ),
@@ -256,6 +263,9 @@ export const api = {
     >((body) => apiFetch("/profile/create-shop", { method: "POST", body })),
     updateShopLocation: M<{ lat: number; lng: number }, { ok: boolean }>((body) =>
       apiFetch("/profile/shop/location", { method: "PATCH", body }),
+    ),
+    updateLocation: M<{ lat: number; lng: number }, { ok: boolean }>((body) =>
+      apiFetch("/profile/location", { method: "PATCH", body }),
     ),
   },
 
