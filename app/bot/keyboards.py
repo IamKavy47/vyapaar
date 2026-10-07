@@ -68,6 +68,19 @@ def merchant_response_keyboard(match_id) -> InlineKeyboardMarkup:
     ]])
 
 
+def compare_offers_keyboard(web_url: str) -> InlineKeyboardMarkup:
+    """Single button that opens the web compare screen for a request.
+
+    The customer gets this exactly once — when the offer window elapses and
+    there are accepted offers to compare. Telegram has no native card-style
+    compare UI, so we send the customer to the web app where the multi-offer
+    card with sort / filter / choose lives.
+    """
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🛒 Compare offers", url=web_url),
+    ]])
+
+
 def clarification_keyboard(options: List[str]) -> InlineKeyboardMarkup:
     numerals = ["1️⃣", "2️⃣", "3️⃣"]
     rows = [

@@ -73,6 +73,37 @@ class Settings(BaseSettings):
     MERCHANT_COOLDOWN_HOURS: int = 12
     REQUEST_EXPIRY_MINUTES: int = 30
 
+    # ---------------- Multi-offer comparison ----------------
+    # How long to wait, after the FIRST merchant YES, before notifying the
+    # customer that offers are available. Lets several merchants reply first so
+    # the customer sees a real comparison instead of just the fastest gun.
+    # Set to 0 to preserve the legacy one-notification-per-YES behaviour.
+    OFFER_WINDOW_SECONDS: int = 20
+
+    # ---------------- Trust & freshness ----------------
+    # Below this many total responses (accepted+declined), a shop is labelled
+    # "New merchant" rather than scored — unfair to penalise new shops for
+    # data they could not have accumulated yet.
+    TRUST_MIN_SAMPLE: int = 5
+    # Response time buckets (seconds) for the trust label. Below FAST = "usually
+    # responds quickly"; below OK = "responds in reasonable time"; otherwise
+    # "may take a while".
+    TRUST_RESPONSE_TIME_FAST_SEC: int = 60
+    TRUST_RESPONSE_TIME_OK_SEC: int = 300
+
+    # ---------------- Stock opportunity scoring ----------------
+    # A product must have at least this many unique nearby customer requests
+    # before we surface it as a stock opportunity to a merchant — otherwise the
+    # signal is too thin to act on.
+    OPPORTUNITY_MIN_REQUESTS: int = 3
+    # How wide to look around the merchant's shop when computing opportunity.
+    OPPORTUNITY_RADIUS_METERS: int = 3000
+
+    # ---------------- Demand heatmap privacy ----------------
+    # Bucket (~300m) — every demand point is snapped to the centre of its
+    # bucket so individual customer locations are never exposed to merchants.
+    HEATMAP_BUCKET_METERS: int = 300
+
     # A customer's own range preference. Defaults to the 5km auto-expansion
     # ceiling above, but each customer can widen or narrow it — rural users
     # often need more than 5km, dense markets often want less noise.

@@ -3,9 +3,12 @@
 Every input type (text, voice, image) funnels through create_request(). Telegram
 handlers contain no business logic; they call into here.
 """
+import asyncio
+from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 
 from bson import ObjectId
+
 from app.config.settings import settings
 from app.database import mongo as m
 from app.models.merchant_match import MatchStatus, build_match_document
@@ -181,11 +184,33 @@ async def run_matching(request: Dict, *, notify: bool = True) -> MatchResult:
 
 
 async def handle_merchant_response(match_id, *, accepted: bool,
-                                   price: Optional[float] = None) -> Tuple[bool, Optional[Dict]]:
-    """Record YES/NO, write the demand event, and notify the customer on YES."""
+                                   price: Optional[float] = None,
+                                   source: str = "real") -> Tuple[bool, Optional[Dict]]:
+    """Record YES/NO, write the demand event, and decide when to notify the customer.
+
+    Multi-offer flow (Priority 1):
+      - The first YES starts an "offer window" (OFFER_WINDOW_SECONDS). The
+        customer is NOT pinged immediately — we want several merchants to
+        reply first so the customer can compare, not just take the fastest gun.
+      - When the window elapses (or a later YES arrives after the window
+        elapsed), the customer receives ONE batched "you have N offers"
+        notification with a button to open the compare screen.
+      - If OFFER_WINDOW_SECONDS == 0, the legacy per-YES behaviour is used
+        (one notification per accepted offer) so demos / tests stay snappy.
+
+    ``source`` is persisted on the match so the UI can label demo-simulated
+    responses clearly ("Demo-simulated merchant response").
+    """
     match = await merchant_matching.record_response(match_id, accepted=accepted, price=price)
     if not match:
         return False, None
+
+    if source and source != "real":
+        await m.merchant_matches().update_one(
+            {"_id": match["_id"]},
+            {"$set": {"source": source}},
+        )
+        match["source"] = source
 
     request = await get_request(match["request_id"])
     shop = await m.shops().find_one({"_id": match["merchant_id"]})
@@ -201,34 +226,266 @@ async def handle_merchant_response(match_id, *, accepted: bool,
         {"$inc": {"accepted_count" if accepted else "declined_count": 1}},
     )
 
-    if accepted:
-        await set_status(match["request_id"], RequestStatus.MATCHED.value)
-        coordinates = from_geojson_point((shop or {}).get("location"))
-        latitude, longitude = coordinates if coordinates else (None, None)
-        text = notification_service.format_customer_match(
-            (shop or {}).get("shop_name", "Shop"),
-            humanize_distance(match.get("distance_meters") or 0),
-            request.get("product") or "Product",
-            price,
-            (shop or {}).get("phone"),
-            address=(shop or {}).get("address"),
-            latitude=latitude,
-            longitude=longitude,
-        )
-        await notification_service.send_message(
-            request.get("telegram_user_id"), text, kind="customer_match"
-        )
-        # A tappable pin in the chat beats a URL for a first-time smartphone user.
-        if latitude is not None and longitude is not None:
-            await notification_service.send_location(
-                request.get("telegram_user_id"), latitude, longitude,
-                title=(shop or {}).get("shop_name", "Shop"),
-                address=(shop or {}).get("address"),
-            )
-    else:
+    if not accepted:
         await merchant_matching.set_cooldown(match["merchant_id"], request.get("product") or "")
+        # A NO never triggers the customer notification path.
+        return True, {"match": match, "request": request, "shop": shop}
 
+    # ----- Multi-offer window logic -----
+    window = int(settings.OFFER_WINDOW_SECONDS or 0)
+    if window <= 0:
+        # Legacy: notify immediately, one message per YES.
+        await _send_per_yes_customer_notification(request, match, shop)
+        await m.product_requests().update_one(
+            {"request_id": request["request_id"]},
+            {"$set": {"status": RequestStatus.MATCHED.value, "updated_at": utcnow()}},
+        )
+        return True, {"match": match, "request": request, "shop": shop}
+
+    # Windowed: only the FIRST YES starts the timer; later YES within the
+    # window are silently accumulated. The customer sees them via the live
+    # web polling, then gets the batched Telegram notification when the
+    # window elapses.
+    expires_at = request.get("offer_window_expires_at")
+    now = utcnow()
+    if not expires_at:
+        # First YES — start the window.
+        new_expires = now + timedelta(seconds=window)
+        await m.product_requests().update_one(
+            {"request_id": request["request_id"],
+             "$or": [{"offer_window_expires_at": None},
+                     {"offer_window_expires_at": {"$exists": False}}]},
+            {"$set": {
+                "offer_window_expires_at": new_expires,
+                "status": RequestStatus.OFFERED.value,
+                "updated_at": now,
+            }},
+        )
+        # Schedule the flush. The task survives even if no more YES arrive.
+        asyncio.create_task(_flush_offers_after_delay(request["request_id"], window))
+        logger.info("offer window started | request=%s expires_in=%ds",
+                    request["request_id"], window)
+        return True, {"match": match, "request": request, "shop": shop}
+
+    # Window already running or already elapsed.
+    if expires_at <= now:
+        # Window elapsed but customer hasn't been notified yet (e.g. the
+        # scheduled task was lost). Flush right now.
+        await flush_offers_to_customer(request["request_id"])
+    # else: window still running; the scheduled task will fire when ready.
     return True, {"match": match, "request": request, "shop": shop}
+
+
+async def _send_per_yes_customer_notification(request: Dict, match: Dict, shop: Optional[Dict]) -> None:
+    """Legacy per-YES customer notification (used when OFFER_WINDOW_SECONDS=0)."""
+    coordinates = from_geojson_point((shop or {}).get("location"))
+    latitude, longitude = coordinates if coordinates else (None, None)
+    text = notification_service.format_customer_match(
+        (shop or {}).get("shop_name", "Shop"),
+        humanize_distance(match.get("distance_meters") or 0),
+        request.get("product") or "Product",
+        match.get("price"),
+        (shop or {}).get("phone"),
+        address=(shop or {}).get("address"),
+        latitude=latitude,
+        longitude=longitude,
+    )
+    await notification_service.send_message(
+        request.get("telegram_user_id"), text, kind="customer_match"
+    )
+    if latitude is not None and longitude is not None:
+        await notification_service.send_location(
+            request.get("telegram_user_id"), latitude, longitude,
+            title=(shop or {}).get("shop_name", "Shop"),
+            address=(shop or {}).get("address"),
+        )
+
+
+async def _flush_offers_after_delay(request_id: str, delay_seconds: int) -> None:
+    """Asyncio task: sleep, then flush accumulated offers to the customer.
+
+    Idempotent — flush_offers_to_customer itself refuses to double-notify,
+    so even if multiple tasks end up scheduled for the same request, only
+    one notification goes out.
+    """
+    try:
+        await asyncio.sleep(max(1, delay_seconds))
+        await flush_offers_to_customer(request_id)
+    except Exception as exc:  # the scheduled flush must never break a request
+        logger.warning("scheduled offer flush failed | %s | %s", request_id, exc)
+
+
+async def flush_offers_to_customer(request_id: str) -> Optional[Dict]:
+    """Send the batched 'you have N offers' notification, exactly once.
+
+    - Reads all currently ACCEPTED offers for the request.
+    - If the customer has already been notified (customer_notified_at set),
+      does nothing (idempotent — safe to call from multiple paths).
+    - Sends a single Telegram message with a button to open the web compare
+      screen, where the customer can sort, compare, and pick.
+    - Sets customer_notified_at and flips the request status to MATCHED.
+
+    A late merchant response (after the customer has been notified) does
+    NOT re-trigger this — the new YES still gets recorded and shown via the
+    web polling, but no second Telegram message is sent.
+    """
+    request = await get_request(request_id)
+    if not request:
+        return None
+    if request.get("customer_notified_at"):
+        return None  # already notified — never double-ping
+    if request.get("status") == RequestStatus.COMPLETED.value:
+        return None  # customer already picked before the window elapsed
+
+    offers = await merchant_matching.accepted_offers(request_id)
+    if not offers:
+        return None
+
+    text = notification_service.format_customer_offers(
+        product=request.get("product") or "Item",
+        offers=offers,
+        public_base_url=settings.PUBLIC_BASE_URL,
+        request_id=request_id,
+    )
+    web_url = (
+        f"{settings.PUBLIC_BASE_URL}/search"
+        f"?q={request.get('product') or ''}&type=text&rid={request_id}"
+    )
+    await notification_service.send_message(
+        request.get("telegram_user_id"), text,
+        reply_markup=notification_service.compare_offers_markup(web_url),
+        kind="customer_offers",
+    )
+    await m.product_requests().update_one(
+        {"request_id": request_id},
+        {"$set": {
+            "customer_notified_at": utcnow(),
+            "status": RequestStatus.MATCHED.value,
+            "updated_at": utcnow(),
+        }},
+    )
+    logger.info("offers flushed | request=%s offers=%d", request_id, len(offers))
+    return {"notified": True, "offers": len(offers)}
+
+
+async def select_offer(*, request_id: str, match_id, customer_id) -> Dict:
+    """Customer picks the winning shop. Exactly-one, owner-only, persist-on-refresh.
+
+    Returns a dict with the selected offer's shop details for the API layer to
+    relay back to the customer (Telegram + web).
+
+    Rules enforced here:
+      - Request must belong to this customer (owner check).
+      - The chosen match must belong to this request.
+      - The chosen match must be ACCEPTED.
+      - If a previous selection exists (selected_match_id is set), refuse.
+      - On success: expire all other PENDING/NOTIFIED matches, set
+        COMPLETED + selected_match_id + selected_at, notify the winning shop
+        and the losing shops.
+    """
+    request = await get_request(request_id)
+    if not request or str(request.get("customer_id")) != str(customer_id):
+        return {"ok": False, "code": "not_owner", "message": "Not your request"}
+
+    if request.get("status") == RequestStatus.COMPLETED.value and request.get("selected_match_id"):
+        return {"ok": False, "code": "already_selected",
+                "message": "You already picked a shop for this request",
+                "selected_match_id": str(request["selected_match_id"])}
+
+    match = await merchant_matching.get_match(match_id)
+    if not match or match.get("request_id") != request_id:
+        return {"ok": False, "code": "not_found", "message": "Offer not found"}
+    if match.get("status") != MatchStatus.ACCEPTED.value:
+        return {"ok": False, "code": "not_accepted",
+                "message": "Shop has not confirmed yet"}
+
+    # Atomically claim the selection. The filter on selected_match_id==None
+    # means a concurrent second selection attempt is rejected safely.
+    result = await m.product_requests().update_one(
+        {"request_id": request_id,
+         "$or": [{"selected_match_id": None}, {"selected_match_id": {"$exists": False}}]},
+        {"$set": {
+            "status": RequestStatus.COMPLETED.value,
+            "selected_match_id": match["_id"],
+            "selected_at": utcnow(),
+            "updated_at": utcnow(),
+        }},
+    )
+    if result.modified_count == 0:
+        # Someone else won the race — re-read to surface the real winner.
+        fresh = await get_request(request_id)
+        return {"ok": False, "code": "already_selected",
+                "message": "A shop has already been chosen for this request",
+                "selected_match_id": str(fresh.get("selected_match_id")) if fresh else None}
+
+    # Expire other pending offers (a late merchant can still reply, but their
+    # offer won't be selectable anymore).
+    await m.merchant_matches().update_many(
+        {"request_id": request_id,
+         "_id": {"$ne": match["_id"]},
+         "status": {"$in": [MatchStatus.PENDING.value, MatchStatus.NOTIFIED.value]}},
+        {"$set": {"status": MatchStatus.EXPIRED.value}},
+    )
+
+    shop = await m.shops().find_one({"_id": match["merchant_id"]})
+    if shop and shop.get("telegram_user_id"):
+        await notification_service.send_message(
+            shop["telegram_user_id"],
+            "🎉 Customer ne aapko chuna!\n\n"
+            f"📦 {request.get('product') or 'Item'}"
+            + (f" — ₹{match['price']:g}" if match.get("price") is not None else "")
+            + "\nCustomer dukaan par aa sakta hai. Stock taiyaar rakhiye.",
+            kind="customer_chose_you",
+        )
+
+    # Losing merchants who said YES get a single "customer chose another shop"
+    # ping so they don't keep stock reserved.
+    async for other in m.merchant_matches().find({
+        "request_id": request_id,
+        "_id": {"$ne": match["_id"]},
+        "status": MatchStatus.ACCEPTED.value,
+    }):
+        other_shop = await m.shops().find_one({"_id": other["merchant_id"]})
+        if other_shop and other_shop.get("telegram_user_id"):
+            await notification_service.send_message(
+                other_shop["telegram_user_id"],
+                "📋 Customer ne kisi aur dukaan se kharid liya.\n\n"
+                f"📦 {request.get('product') or 'Item'}\n"
+                "Dhanyavaad — aapka YES demand data mein save hua hai.",
+                kind="customer_chose_other",
+            )
+
+    # Final customer notification: full shop details + map pin.
+    if request.get("telegram_user_id") and shop:
+        coords = from_geojson_point(shop.get("location"))
+        if coords:
+            text = notification_service.format_customer_selection(
+                shop_name=shop.get("shop_name", "Shop"),
+                product=request.get("product") or "Item",
+                price=match.get("price"),
+                phone=shop.get("phone"),
+                address=shop.get("address"),
+                latitude=coords[0], longitude=coords[1],
+                distance_meters=match.get("distance_meters") or 0,
+            )
+            await notification_service.send_message(
+                request["telegram_user_id"], text,
+                kind="customer_selection",
+            )
+            await notification_service.send_location(
+                request["telegram_user_id"], coords[0], coords[1],
+                title=shop.get("shop_name", "Shop"),
+                address=shop.get("address"),
+                kind="shop_location",
+            )
+
+    return {
+        "ok": True,
+        "selected_match_id": str(match["_id"]),
+        "shop_id": str(match["merchant_id"]),
+        "shop": shop,
+        "match": match,
+    }
 
 
 async def recent_requests(customer_id, limit: int = 10) -> List[Dict]:

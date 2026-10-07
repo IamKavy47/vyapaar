@@ -41,31 +41,40 @@ def offset(lat: float, lng: float, north_m: float, east_m: float):
 SHOPS = [
     ("Sharma Hardware", "hardware",
      ["plumbing", "pipes", "fittings", "tools", "sealants", "adhesives"],
-     180, 90, []),  # ← ZERO INVENTORY on purpose
+     180, 90, []),  # ← ZERO INVENTORY on purpose (capable but unlisted)
     ("Patel Plumbing", "plumbing",
      ["pipes", "fittings", "sealants", "taps", "sanitary"],
-     -260, 150, []),  # ← ZERO INVENTORY
+     -260, 150, []),
+    # Gupta Electricals now stocks Teflon Tape — the demo's "shop with
+    # inventory listed" that confirms at the listed price (₹25).
     ("Gupta Electricals", "electrical",
-     ["wires", "switches", "bulbs", "tape", "fans", "adapters"],
-     320, -210, [("Electrical Tape", 40, "roll", "Anchor", 25.0)]),
+     ["wires", "switches", "bulbs", "tape", "fans", "adapters", "plumbing"],
+     320, -210, [("Electrical Tape", 40, "roll", "Anchor", 25.0),
+                 ("Teflon Tape", 60, "piece", None, 25.0)]),
     ("Ramesh General Store", "general_store",
      ["household", "groceries", "stationery", "cleaning", "adhesives"],
      -140, -320, [("Fevicol", 12, "bottle", "Pidilite", 45.0)]),
     ("Mobile Point", "mobile_electronics",
      ["mobiles", "chargers", "cables", "accessories", "repair"],
-     700, 420, []),  # ← ZERO INVENTORY
+     700, 420, []),
     ("Stationery Corner", "stationery",
      ["paper", "pens", "notebooks", "printing", "adhesives"],
      -620, 380, [("A4 Paper Ream", 30, "packet", "JK", 320.0)]),
     ("Maa Medical", "medical",
      ["medicines", "otc", "first_aid", "surgical"],
-     450, 620, []),  # ← ZERO INVENTORY
+     450, 620, []),
     ("Fashion Point", "clothing",
      ["apparel", "fabric", "tailoring"],
      -900, -640, [("Cotton Shirt", 25, "piece", None, 499.0)]),
     ("Sweet Bakery House", "bakery_food",
      ["bakery", "snacks", "sweets", "beverages"],
-     1200, -800, []),  # ← ZERO INVENTORY
+     1200, -800, []),
+    # Raj Plumbing: 1.2km north of centre, capable but does NOT stock
+    # Teflon Tape — its NO is the demand-intelligence signal that drives
+    # the demo's "stock opportunity" recommendation.
+    ("Raj Plumbing", "plumbing",
+     ["pipes", "fittings", "taps", "sanitary", "water_purifiers"],
+     1200, 0, []),
     ("Verma Hardware & Paints", "hardware",
      ["paints", "tools", "fasteners", "plumbing", "sealants"],
      -1500, 1100, [("Teflon Tape", 60, "piece", None, 28.0)]),

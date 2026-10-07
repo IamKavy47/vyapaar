@@ -59,6 +59,17 @@ def build_request_document(
         "max_radius_meters": int(max_radius_meters) if max_radius_meters else None,
         "status": RequestStatus.CREATED.value,
         "matched_count": 0,
+        # Multi-offer window: when the first merchant YES arrives we set
+        # ``offer_window_expires_at = now + OFFER_WINDOW_SECONDS``. The
+        # scheduler (and any later YES) check it to decide when to flush the
+        # batched "you have N offers" notification to the customer.
+        "offer_window_expires_at": None,
+        "customer_notified_at": None,
+        # Customer's final pick (one offer only). Persisted so a refresh after
+        # selection still shows the chosen shop, and a second selection
+        # attempt is rejected by the API.
+        "selected_match_id": None,
+        "selected_at": None,
         "created_at": now,
         "updated_at": now,
     }

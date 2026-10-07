@@ -14,6 +14,7 @@ from app.config.settings import settings
 from app.models.user import UserRole
 from app.schemas.intent import ProductIntent
 from app.services import search_service
+from app.services import demo_service
 from app.services.location_service import get_customer_location
 from app.utils.geo import humanize_distance
 from app.utils.logging import get_logger
@@ -101,6 +102,13 @@ async def _run_pipeline(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     await message.reply_text("\n".join(summary))
 
     result = await search_service.run_matching(request, notify=True)
+
+    # Trigger deterministic demo simulation (no-op when DEMO_MODE is off or
+    # a real Telegram bot is polling — clearly labelled source="demo_simulated").
+    try:
+        await demo_service.maybe_schedule_demo_responses(request, result.candidates)
+    except Exception as exc:
+        logger.warning("demo simulation skipped: %s", exc)
 
     if not result.candidates:
         await message.reply_text(

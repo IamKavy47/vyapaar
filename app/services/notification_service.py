@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 from app.database import mongo as m
 from app.models.user import utcnow
-from app.utils.geo import navigation_link
+from app.utils.geo import humanize_distance, navigation_link
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -154,3 +154,65 @@ def format_customer_match(shop_name: str, distance_text: str, product: str,
     lines += ["", "Please contact the merchant to purchase.",
               "(Shop ne availability confirm ki hai — order abhi place nahi hua hai.)"]
     return "\n".join(lines)
+
+
+def format_customer_offers(*, product: str, offers: List[Dict],
+                           public_base_url: str = "", request_id: str = "") -> str:
+    """Batched 'you have N offers' notification — sent once when the offer
+    window elapses so the customer can compare instead of taking the fastest gun.
+
+    Each offer dict is the row returned by merchant_matching.accepted_offers().
+    """
+    n = len(offers)
+    if n == 0:
+        return f"📭 Abhi tak koi offer nahi aaya — {product} ke liye."
+    if n == 1:
+        head = f"📨 1 dukaan ne {product} ke liye haan bola!"
+    else:
+        head = f"📨 {n} dukaano ne {product} ke liye haan bola!"
+    lines = [head, ""]
+    for offer in offers:
+        price = f" · ₹{offer['price']:g}" if offer.get("price") is not None else ""
+        lines.append(
+            f"✅ {offer.get('shop_name', 'Shop')}"
+            f" — {humanize_distance(offer.get('distance_meters') or 0)} door{price}"
+        )
+    lines += ["", "Sabhi offers compare karke best dukaan chunein:"]
+    if public_base_url and request_id:
+        lines.append(f"{public_base_url}/search?q={product}&type=text&rid={request_id}")
+    lines += ["", "(Order abhi place nahi hua — dukaan ne sirf availability confirm ki hai.)"]
+    return "\n".join(lines)
+
+
+def format_customer_selection(*, shop_name: str, product: str,
+                              price: Optional[float], phone: Optional[str] = None,
+                              address: Optional[str] = None,
+                              latitude: Optional[float] = None,
+                              longitude: Optional[float] = None,
+                              distance_meters: float = 0.0) -> str:
+    """Final message the customer sees AFTER picking a shop — gives them the
+    full shop details + a map pin so they can walk over / call."""
+    lines = [
+        "✅ Deal pakki! Aapki choice:",
+        "",
+        f"🏪 {shop_name}",
+        f"📍 {humanize_distance(distance_meters or 0)} away",
+        f"🔧 {product}",
+    ]
+    if price is not None:
+        lines.append(f"💰 ₹{price:g}")
+    if phone:
+        lines.append(f"📞 {phone}")
+    if address:
+        lines.append(f"🏠 {address}")
+    if latitude is not None and longitude is not None:
+        lines += ["", f"🧭 Directions: {navigation_link(latitude, longitude)}"]
+    lines += ["", "Dukaan pe jaake le lo — ya call karke rakhwa lo.",
+              "(Order formalise nahi hua hai — sirf availability pakki hui.)"]
+    return "\n".join(lines)
+
+
+def compare_offers_markup(web_url: str):
+    """Single 'Compare offers' URL button — opens the web compare screen."""
+    from app.bot.keyboards import compare_offers_keyboard
+    return compare_offers_keyboard(web_url)

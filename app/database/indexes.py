@@ -39,14 +39,36 @@ async def create_indexes() -> None:
         await m.product_requests().create_index([("customer_id", ASCENDING), ("created_at", DESCENDING)])
         await m.product_requests().create_index([("status", ASCENDING)])
         await m.product_requests().create_index([("location", GEOSPHERE)])
+        # Multi-offer window: lets the scheduler find requests whose window
+        # has elapsed but the customer hasn't been notified yet — for
+        # batched flushes.
+        await m.product_requests().create_index([("offer_window_expires_at", ASCENDING)])
+        # Customer-selection audit trail: which shop the customer picked
+        # (atomic exactly-one selection is enforced at update_one filter
+        # time, but this index makes "who did this customer pick?" fast).
+        await m.product_requests().create_index(
+            [("selected_match_id", ASCENDING)],
+            partialFilterExpression={"selected_match_id": {"$type": "objectId"}},
+            name="selected_match_id_when_set",
+        )
 
         await m.merchant_matches().create_index([("request_id", ASCENDING), ("merchant_id", ASCENDING)], unique=True)
         await m.merchant_matches().create_index([("merchant_id", ASCENDING), ("status", ASCENDING)])
+        # Source provenance (real / demo_simulated) — supports filtering
+        # offer lists by provenance and demo-mode analytics.
+        await m.merchant_matches().create_index([("source", ASCENDING)])
 
         await m.demand_events().create_index([("product_key", ASCENDING), ("created_at", DESCENDING)])
         await m.demand_events().create_index([("merchant_id", ASCENDING), ("created_at", DESCENDING)])
         await m.demand_events().create_index([("category", ASCENDING)])
         await m.demand_events().create_index([("location", GEOSPHERE)])
+        # Dedup guard: a single (request_id, merchant_id) must never produce
+        # two demand events. record_response in merchant_matching already
+        # enforces idempotency at the match layer, but this index makes it
+        # impossible even for a buggy writer.
+        await m.demand_events().create_index(
+            [("request_id", ASCENDING), ("merchant_id", ASCENDING)], unique=True,
+        )
 
         await m.khata_entries().create_index([("merchant_id", ASCENDING), ("customer_key", ASCENDING)])
         await m.khata_entries().create_index([("created_at", DESCENDING)])

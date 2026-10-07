@@ -15,6 +15,7 @@ import Inbox from "@/pages/merchant/Inbox";
 import Inventory from "@/pages/merchant/Inventory";
 import Khata from "@/pages/merchant/Khata";
 import Demand from "@/pages/merchant/Demand";
+import Impact from "@/pages/merchant/Impact";
 import Login from "@/pages/Login";
 import Onboarding from "@/pages/Onboarding";
 import NotFound from "@/pages/NotFound";
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="/merchant/inventory" element={<Inventory />} />
           <Route path="/merchant/khata" element={<Khata />} />
           <Route path="/merchant/demand" element={<Demand />} />
+          <Route path="/merchant/impact" element={<Impact />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Routes>

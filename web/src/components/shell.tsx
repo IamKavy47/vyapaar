@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { NavLink, Outlet, useNavigate, useLocation as useRouteLocation, Link } from "react-router";
 import {
   Home, Store, ArrowLeftRight, ClipboardList, UserRound,
-  Inbox, Package, BookOpenText, TrendingUp, ArrowLeft,
+  Inbox, Package, BookOpenText, TrendingUp, ArrowLeft, BarChart3,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { api as trpc } from "@/lib/api";
@@ -20,8 +20,9 @@ const CUSTOMER_NAV = [
 const MERCHANT_NAV = [
   { to: "/merchant", label: "Inbox", icon: Inbox, end: true },
   { to: "/merchant/inventory", label: "Stock", icon: Package },
-  { to: "/merchant/khata", label: "Khata", icon: BookOpenText },
   { to: "/merchant/demand", label: "Demand", icon: TrendingUp },
+  { to: "/merchant/impact", label: "Impact", icon: BarChart3 },
+  { to: "/merchant/khata", label: "Khata", icon: BookOpenText },
   { to: "/account", label: "You", icon: UserRound },
 ];
 

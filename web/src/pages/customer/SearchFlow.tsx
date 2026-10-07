@@ -1,11 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
-import { Phone, Navigation, BadgeCheck, PartyPopper, CircleCheck } from "lucide-react";
+import {
+  Phone, Navigation, PartyPopper, Filter,
+} from "lucide-react";
 import { api as trpc } from "@/lib/api";
 import { useLocation } from "@/lib/location";
 import { TopBar } from "@/components/shell";
 import { CategoryIcon, Thinking } from "@/components/brand";
+import {
+  OfferCard, SORT_OPTIONS, sortOffers, type OfferSortKey,
+} from "@/components/OfferCard";
 import { formatDistance, formatINR, clsx } from "@/lib/format";
 import { categoryMeta } from "@/lib/localmart";
 
@@ -23,9 +28,17 @@ export default function SearchFlow() {
 
   const [phase, setPhase] = useState<Phase>("intent");
   const [requestId, setRequestId] = useState<string | null>(null);
-  const [intent, setIntent] = useState<{ product: string; categoryKey: string; confidence: number } | null>(null);
+  const [intent, setIntent] = useState<{
+    product: string;
+    categoryKey: string;
+    confidence: number;
+    provider?: string;
+    isRuleBased?: boolean;
+  } | null>(null);
   const [candidates, setCandidates] = useState<any[]>([]);
   const [radiusIdx, setRadiusIdx] = useState(0);
+  const [sortKey, setSortKey] = useState<OfferSortKey>("best");
+  const [hideDeclined, setHideDeclined] = useState(true);
   const startedRef = useRef(false);
   const RADII = [500, 1000, 2000, 5000];
 
@@ -39,11 +52,11 @@ export default function SearchFlow() {
       toast.success("Pakka! Dukaan ko bata diya.");
       detail.refetch();
     },
+    onError: (e) => toast.error(e.message),
   });
 
   useEffect(() => {
     if (startedRef.current) return;
-    // Re-open an existing request (from Activity)
     if (rid) {
       startedRef.current = true;
       setRequestId(rid);
@@ -67,7 +80,13 @@ export default function SearchFlow() {
           lat: requestLat,
           lng: requestLng,
         });
-        setIntent(res.intent);
+        setIntent({
+          product: res.intent.product,
+          categoryKey: res.intent.categoryKey,
+          confidence: res.intent.confidence,
+          provider: res.intent.provider,
+          isRuleBased: res.intent.isRuleBased,
+        });
         setRequestId(res.requestId);
         await tick(1000);
         setPhase("matching");
@@ -89,14 +108,29 @@ export default function SearchFlow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
 
+  // Live-pulled offers from the detail endpoint.
   const offers = detail.data?.offers ?? [];
-  const answered = offers.filter((o) => o.status !== "pending");
+  const request = detail.data?.request;
+  const selectedMatchId = request?.selectedMatchId ?? null;
+  const acceptedCount = offers.filter((o) => o.status === "accepted").length;
+
+  // Apply sort + filter to the offer list.
+  const visibleOffers = useMemo(() => {
+    const filtered = hideDeclined
+      ? offers.filter((o) => o.status !== "declined" && o.status !== "expired")
+      : offers;
+    return sortOffers(filtered, sortKey);
+  }, [offers, sortKey, hideDeclined]);
 
   // When re-opening an existing request, hydrate intent + candidates from detail
   useEffect(() => {
     if (rid && detail.data && !intent) {
       const r = detail.data.request;
-      setIntent({ product: r.product, categoryKey: r.categoryKey, confidence: r.confidence });
+      setIntent({
+        product: r.product,
+        categoryKey: r.categoryKey,
+        confidence: r.confidence,
+      });
       setCandidates(
         detail.data.offers.map((o) => ({
           shopId: o.shopId,
@@ -109,6 +143,13 @@ export default function SearchFlow() {
     }
   }, [rid, detail.data, intent]);
 
+  // Selected shop (for the "Deal pakki!" panel) — find the accepted offer that
+  // matches the request's selectedMatchId.
+  const selectedOffer = useMemo(
+    () => offers.find((o) => o.id === selectedMatchId) ?? null,
+    [offers, selectedMatchId],
+  );
+
   const meta = categoryMeta(intent?.categoryKey ?? "other");
 
   return (
@@ -120,7 +161,11 @@ export default function SearchFlow() {
         <div className="absolute -top-8 -right-8 w-32 h-32 rounded-full bg-brand-yellow/15" />
         <div className="absolute -bottom-10 -left-6 w-28 h-28 rounded-full bg-brand-green/20" />
         <div className="text-[10.5px] font-extrabold uppercase tracking-[0.18em] text-brand-yellow">
-          {inputType === "voice" ? "Awaaz se samjha" : inputType === "image" ? "Photo se pehchana" : "AI Intent"}
+          {inputType === "voice"
+            ? "Awaaz se samjha"
+            : inputType === "image"
+              ? "Photo se pehchana"
+              : "AI Intent"}
         </div>
         {phase === "intent" || !intent ? (
           <div className="mt-4"><Thinking dark text="Samajh raha hoon…" /></div>
@@ -136,9 +181,22 @@ export default function SearchFlow() {
               >
                 {meta.label}
               </span>
-              <span className={clsx("text-[12px] font-extrabold", (intent?.confidence ?? 0) >= 0.8 ? "text-[#8ED462]" : "text-brand-yellow")}>
+              <span className={clsx(
+                "text-[12px] font-extrabold",
+                (intent?.confidence ?? 0) >= 0.8 ? "text-[#8ED462]" : "text-brand-yellow",
+              )}>
                 confidence {Math.round((intent?.confidence ?? 0) * 100)}%
               </span>
+              {intent?.isRuleBased && (
+                <span className="rounded-full bg-[#7C3AED]/30 text-brand-yellow px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide">
+                  Rule-based fallback
+                </span>
+              )}
+              {intent?.provider && !intent?.isRuleBased && (
+                <span className="text-[11px] font-bold text-brand-yellow/70 uppercase tracking-wide">
+                  via {intent.provider}
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -210,11 +268,18 @@ export default function SearchFlow() {
         </section>
       )}
 
-      {/* III — live offers */}
+      {/* III — live offers + sort + filter */}
       {phase === "offers" && candidates.length > 0 && (
         <section className="mt-6 lm-enter">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-display text-[19px]">Dukaan ke Jawab</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="font-display text-[19px]">Dukaan ke Jawab</h2>
+              {acceptedCount > 0 && (
+                <span className="rounded-full bg-brand-green text-brand-cream px-2 py-0.5 text-[10.5px] font-extrabold">
+                  {acceptedCount} offer{acceptedCount === 1 ? "" : "s"} ready
+                </span>
+              )}
+            </div>
             {offers.some((o) => o.status === "pending") && (
               <span className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wide text-brand-green">
                 <span className="w-2 h-2 rounded-full bg-brand-green lm-pulse-dot" /> live
@@ -222,36 +287,126 @@ export default function SearchFlow() {
             )}
           </div>
 
-          {offers.length === 0 && (
-            <div className="rounded-3xl border-2 border-dashed border-brand-ink/20 bg-card p-6">
-              <Thinking text="Dukaandaar se jawab aa raha hai…" />
+          {/* Sort + filter controls */}
+          {offers.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap mb-3">
+              <div className="flex items-center gap-1.5 rounded-full border-2 border-brand-ink/15 bg-card p-1 overflow-x-auto">
+                {SORT_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setSortKey(opt.key)}
+                    className={clsx(
+                      "rounded-full px-3 py-1 text-[11px] font-extrabold whitespace-nowrap",
+                      sortKey === opt.key
+                        ? "bg-brand-ink text-brand-yellow"
+                        : "text-brand-ink/60 hover:text-brand-ink",
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setHideDeclined((v) => !v)}
+                className={clsx(
+                  "rounded-full border-2 px-3 py-1 text-[11px] font-extrabold inline-flex items-center gap-1",
+                  hideDeclined
+                    ? "border-brand-ink/15 bg-card text-brand-ink/60"
+                    : "border-brand-ink bg-brand-ink text-brand-yellow",
+                )}
+              >
+                <Filter className="w-3 h-3" /> {hideDeclined ? "Sabhi" : "Sirf 'Hai!'"}
+              </button>
             </div>
           )}
 
-          <div className="space-y-3">
-            {offers.map((o) => (
-              <OfferCard
-                key={o.id}
-                offer={o}
-                pending={choose.isPending}
-                onChoose={() => choose.mutate({ offerId: o.id })}
-                onOpen={() => navigate(`/shop/${o.shopId}`)}
-              />
-            ))}
-          </div>
-
-          {answered.length === 0 && (
-            <p className="text-center text-[12px] font-extrabold uppercase tracking-[0.14em] text-muted-foreground py-3">
-              Jawab aate hi yahan dikhenge — page khula rakho
-            </p>
+          {offers.length === 0 && (
+            <div className="rounded-3xl border-2 border-dashed border-brand-ink/20 bg-card p-6">
+              <Thinking text="Dukaandaar se jawab aa raha hai…" />
+              <p className="text-[11.5px] font-extrabold uppercase tracking-[0.14em] text-muted-foreground text-center mt-2">
+                Page khula rakho — jaise hi koi dukaan haan bolega, yahan dikh jayega
+              </p>
+            </div>
           )}
 
-          {detail.data?.request.status === "completed" && (
-            <div className="lm-pop mt-4 rounded-[28px] border-2 border-brand-ink bg-brand-green p-5 text-center shadow-sticker-green">
-              <PartyPopper className="w-7 h-7 mx-auto text-brand-yellow" />
-              <div className="font-display text-[19px] text-brand-cream mt-2">Deal pakki!</div>
-              <p className="text-[13px] font-bold text-brand-cream/80 mt-1">
-                Dukaan pe jaake le lo — ya call karke rakhwa lo.
+          {visibleOffers.length > 0 && (
+            <div className="space-y-3">
+              {visibleOffers.map((o) => (
+                <OfferCard
+                  key={o.id}
+                  offer={o}
+                  isPending={choose.isPending}
+                  isSelected={o.id === selectedMatchId}
+                  onChoose={() => choose.mutate({ offerId: o.id })}
+                  onOpen={() => navigate(`/shop/${o.shopId}`)}
+                />
+              ))}
+            </div>
+          )}
+
+          {request?.status === "completed" && selectedOffer && (
+            <div className="lm-pop mt-4 rounded-[28px] border-2 border-brand-ink bg-brand-green p-5 shadow-sticker-green">
+              <div className="flex items-center gap-2 text-brand-yellow">
+                <PartyPopper className="w-7 h-7" />
+                <div className="font-display text-[19px] text-brand-cream">Deal pakki!</div>
+              </div>
+              <div className="mt-3 rounded-2xl bg-brand-cream p-4">
+                <div className="flex items-start gap-3">
+                  <CategoryIcon categoryKey={selectedOffer.shop?.categoryKey ?? "other"} size={44} />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-extrabold text-[15px]">
+                      {selectedOffer.shop?.name}
+                    </div>
+                    <div className="text-[12px] font-bold text-brand-ink/60 mt-0.5">
+                      {formatDistance(selectedOffer.distanceMeters)} door · {selectedOffer.shop?.address}
+                    </div>
+                    {selectedOffer.price != null && (
+                      <div className="font-display text-[22px] mt-1 text-brand-green">
+                        {formatINR(selectedOffer.price)}
+                      </div>
+                    )}
+                    {selectedOffer.freshness && (
+                      <div className="text-[10.5px] font-bold text-brand-ink/55 mt-1">
+                        {selectedOffer.freshness.statusLabel}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {selectedOffer.shop && (
+                  <div className="grid grid-cols-2 gap-2 mt-4">
+                    <a
+                      href={`https://www.google.com/maps/dir/?api=1&destination=${selectedOffer.shop.lat},${selectedOffer.shop.lng}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-full border-2 border-brand-ink bg-brand-ink text-brand-yellow text-[12px] font-extrabold py-2.5 flex items-center justify-center gap-1.5"
+                    >
+                      <Navigation className="w-3.5 h-3.5" /> Route
+                    </a>
+                    {selectedOffer.shop.phone && (
+                      <a
+                        href={`tel:${selectedOffer.shop.phone}`}
+                        className="rounded-full border-2 border-brand-ink bg-card text-[12px] font-extrabold py-2.5 flex items-center justify-center gap-1.5"
+                      >
+                        <Phone className="w-3.5 h-3.5" /> Call
+                      </a>
+                    )}
+                  </div>
+                )}
+                <p className="text-[10.5px] font-bold text-brand-ink/55 mt-2 text-center">
+                  Dukaan pe jaake le lo — ya call karke rakhwa lo.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {request?.status === "no_match" && (
+            <div className="mt-4 rounded-[28px] border-2 border-dashed border-brand-ink/20 bg-card p-5">
+              <div className="font-display text-[17px]">Demand note ho gayi</div>
+              <p className="text-[12px] font-bold text-muted-foreground mt-1">
+                Aapki request demand data mein save ho gayi hai — nearby shops ko
+                pata chalega ki is mohalle ko yeh product chahiye.
               </p>
             </div>
           )}
@@ -281,98 +436,6 @@ function Radar({ active, found }: { active: boolean; found: boolean }) {
         </g>
         <circle cx="42" cy="42" r="4.5" fill="#F03749" stroke="#FFFCF5" strokeWidth="2" />
       </svg>
-    </div>
-  );
-}
-
-function OfferCard({
-  offer,
-  pending,
-  onChoose,
-  onOpen,
-}: {
-  offer: any;
-  pending: boolean;
-  onChoose: () => void;
-  onOpen: () => void;
-}) {
-  const ok = offer.status === "accepted";
-  const no = offer.status === "declined" || offer.status === "expired";
-  const waiting = offer.status === "pending";
-  const shop = offer.shop;
-  return (
-    <div
-      className={clsx(
-        "lm-pop rounded-[26px] border-2 p-4 relative overflow-hidden transition-all",
-        ok && "border-brand-green bg-[#00914610] shadow-sticker",
-        waiting && "border-brand-ink/12 bg-card",
-        no && "border-brand-ink/10 bg-card opacity-60",
-      )}
-    >
-      <div className="flex items-start gap-3.5">
-        <CategoryIcon categoryKey={shop.categoryKey} size={46} />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="font-extrabold text-[15.5px] truncate">{shop.name}</span>
-            {shop.isVerified && <BadgeCheck className="w-4 h-4 text-brand-green shrink-0" />}
-            <span
-              className={clsx(
-                "rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide",
-                ok && "bg-brand-green text-brand-cream",
-                waiting && "bg-brand-yellow text-brand-ink",
-                no && "bg-brand-ink/10 text-brand-ink/50",
-              )}
-            >
-              {ok ? "Hai!" : waiting ? "soch rahe…" : "Nahi hai"}
-            </span>
-          </div>
-          <div className="text-[12px] font-bold text-muted-foreground mt-1">
-            {formatDistance(offer.distanceMeters)} door · {shop.address}
-          </div>
-        </div>
-        {ok && offer.price != null && (
-          <div className="text-right shrink-0">
-            <div className="font-display text-[24px] leading-none text-brand-ink">{formatINR(offer.price)}</div>
-          </div>
-        )}
-      </div>
-
-      {ok && (
-        <div className="grid grid-cols-3 gap-2 mt-4">
-          <a
-            href={`https://www.google.com/maps/dir/?api=1&destination=${shop.lat},${shop.lng}`}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-full border-2 border-brand-ink bg-brand-ink text-brand-yellow text-[12px] font-extrabold py-2.5 flex items-center justify-center gap-1.5"
-          >
-            <Navigation className="w-3.5 h-3.5" /> Route
-          </a>
-          {shop.phone ? (
-            <a
-              href={`tel:${shop.phone}`}
-              className="rounded-full border-2 border-brand-ink bg-card text-[12px] font-extrabold py-2.5 flex items-center justify-center gap-1.5"
-            >
-              <Phone className="w-3.5 h-3.5" /> Call
-            </a>
-          ) : (
-            <button onClick={onOpen} className="rounded-full border-2 border-brand-ink bg-card text-[12px] font-extrabold py-2.5">
-              Dukaan
-            </button>
-          )}
-          <button
-            onClick={onChoose}
-            disabled={pending}
-            className="rounded-full border-2 border-brand-green bg-brand-green text-brand-cream text-[12px] font-extrabold py-2.5 flex items-center justify-center gap-1.5 disabled:opacity-50"
-          >
-            <CircleCheck className="w-3.5 h-3.5" /> Yahi final
-          </button>
-        </div>
-      )}
-      {no && (
-        <p className="text-[10.5px] font-extrabold uppercase tracking-[0.12em] mt-2.5 text-muted-foreground">
-          Demand note hui · agli baar stock mein hoga
-        </p>
-      )}
     </div>
   );
 }

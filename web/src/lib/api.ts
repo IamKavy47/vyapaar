@@ -153,6 +153,10 @@ export interface CustomerRequest {
   inputType: "text" | "voice" | "image" | string;
   rawText?: string | null;
   matchedCount: number;
+  selectedMatchId?: string | null;
+  selectedAt?: string | null;
+  offerWindowExpiresAt?: string | null;
+  customerNotifiedAt?: string | null;
   createdAt?: string | null;
 }
 
@@ -164,11 +168,43 @@ export interface Offer {
   price?: number | null;
   distanceMeters: number;
   matchScore: number;
+  scoreBreakdown?: Record<string, number>;
   hasInventoryHint: boolean;
+  source?: "real" | "demo_simulated";
+  isDemoSimulated?: boolean;
   createdAt?: string | null;
+  notifiedAt?: string | null;
   respondedAt?: string | null;
+  responseSeconds?: number | null;
+  inventoryUpdatedAt?: string | null;
+  trust?: TrustInfo | null;
+  freshness?: FreshnessInfo | null;
+  whyRecommended?: string[];
   shop?: Shop;
   request?: CustomerRequest;
+}
+
+/** Explainable merchant trust score. Computed server-side from shop counters
+ * + recent response-time history. New shops get a neutral 50/100 — never a
+ * low score that would unfairly hurt a brand-new shop. */
+export interface TrustInfo {
+  responseRate: number;
+  acceptanceRate: number;
+  averageResponseSeconds: number | null;
+  reliabilityScore: number;
+  label: string;
+  isNewMerchant: boolean;
+  sampleSize: number;
+  isVerified: boolean;
+  reason: string;
+}
+
+/** Freshness signals for an offer — proves the data shown is current, never
+ * presents stale information as guaranteed current availability. */
+export interface FreshnessInfo {
+  statusLabel: string;
+  priceLabel: string;
+  respondedSecondsAgo: number | null;
 }
 
 export interface TrendingProduct {
@@ -176,6 +212,95 @@ export interface TrendingProduct {
   categoryKey: string;
   requests: number;
   unavailable: number;
+}
+
+export interface UniqueRequestedProduct extends TrendingProduct {
+  category?: string | null;
+  uniqueRequests: number;
+  available: number;
+  unavailableRate: number;
+  averageSearchDistanceMeters?: number | null;
+  last_seen?: string | null;
+}
+
+/** Honest demand metrics — distinguishes unique customer requests from
+ * merchant response attempts (one request with 5 merchant YESes is still
+ * 1 unique customer request, never 5). */
+export interface HonestDemandStats {
+  uniqueCustomerRequests: number;
+  requestsMatched: number;
+  requestsUnmatched: number;
+  zeroInventoryMatches: number;
+  successfulCustomerSelections: number;
+  merchantResponseAttempts: number;
+  availableResponses: number;
+  unavailableResponses: number;
+  pendingResponses: number;
+  unavailableRate: number;
+  avgSearchDistanceMeters?: number | null;
+  periodDays: number;
+}
+
+/** Stock opportunity recommendation. Score is deterministic (no ML), every
+ * input is shown to the merchant, recommended quantity is clearly labelled
+ * as a heuristic — never a sales forecast. */
+export interface StockOpportunity {
+  product: string;
+  category?: string | null;
+  uniqueRequests: number;
+  unavailableRequests: number;
+  availableRequests: number;
+  unavailableRate: number;
+  trend: "rising" | "stable" | "falling";
+  trendRatio?: number | null;
+  averageSearchDistanceMeters?: number | null;
+  nearbyInventoryCoverage: number;
+  merchantCategoryAffinity: number;
+  merchantAlreadyStocks: boolean;
+  opportunityScore: number;
+  recommendedQuantity: number;
+  reason: string;
+  breakdown?: Record<string, number> | null;
+}
+
+/** Privacy-safe demand heatmap bucket. Each point represents a *bucket* of
+ * demand (not an individual customer), snapped to a ~300m grid centre. */
+export interface HeatmapPoint {
+  latitude: number;
+  longitude: number;
+  product: string;
+  category?: string | null;
+  uniqueRequests: number;
+  unavailableRequests: number;
+  unavailableRate: number;
+  periodDays: number;
+}
+
+export interface NeighborhoodInsight {
+  product: string;
+  productKey?: string;
+  category?: string | null;
+  uniqueRequests: number;
+  unavailableRequests: number;
+  availableRequests: number;
+  unavailableRate: number;
+  averageSearchDistanceMeters?: number | null;
+  radius: string;
+  reason: string;
+}
+
+export interface ImpactMetrics {
+  uniqueCustomerRequests: number;
+  requestsMatched: number;
+  requestsUnmatched: number;
+  zeroInventoryMatches: number;
+  successfulCustomerSelections: number;
+  merchantResponseAttempts: number;
+  availableResponses: number;
+  unavailableResponses: number;
+  merchantResponseRate: number;
+  avgSearchDistanceMeters?: number | null;
+  estimatedSearchDistanceSavedMeters: number;
 }
 
 export interface CreateRequestResult {
@@ -188,6 +313,8 @@ export interface CreateRequestResult {
     quantity: number;
     unit: string;
     confidence: number;
+    provider?: string;
+    isRuleBased?: boolean;
   };
   candidates: Array<{
     shopId: string;
@@ -297,8 +424,12 @@ export const api = {
       "request.detail",
       (input) => apiFetch(`/requests/${input.id}`),
     ),
-    choose: M<{ offerId: string }, { ok: boolean }>((body) =>
-      apiFetch("/requests/choose", { method: "POST", body }),
+    offers: Q<{ id: string }, { offers: Offer[] }>(
+      "request.offers",
+      (input) => apiFetch(`/requests/${input.id}/offers`),
+    ),
+    choose: M<{ offerId: string }, { ok: boolean; selectedMatchId?: string; shopId?: string }>(
+      (body) => apiFetch("/requests/choose", { method: "POST", body }),
     ),
     reserve: M<
       { itemId: string; quantity?: number; lat: number; lng: number },
@@ -331,6 +462,10 @@ export const api = {
     removeItem: M<{ id: string }, { ok: boolean }>((body) =>
       apiFetch(`/merchant/inventory/${body.id}`, { method: "DELETE" }),
     ),
+    planFromOpportunity: M<
+      { product: string; quantity: number; unit: string; price?: number },
+      { ok: boolean; productId?: string }
+    >((body) => apiFetch("/merchant/inventory/plan", { method: "POST", body })),
     khata: Q<void, { entries: KhataEntry[]; udhaar: number; jama: number; outstanding: number }>(
       "merchant.khata",
       () => apiFetch("/merchant/khata"),
@@ -340,13 +475,51 @@ export const api = {
       { ok: boolean }
     >((body) => apiFetch("/merchant/khata", { method: "POST", body })),
     demand: Q<
-      void,
+      { days?: number },
       {
-        products: TrendingProduct[];
+        products: UniqueRequestedProduct[];
         categories: Array<{ categoryKey: string; requests: number }>;
         total: number;
+        honestStats: HonestDemandStats;
+        isDemoData: boolean;
+        days: number;
       }
-    >("merchant.demand", () => apiFetch("/merchant/demand")),
+    >("merchant.demand", (input) => apiFetch(`/merchant/demand${qs(input ?? {})}`)),
+    opportunities: Q<
+      { days?: number; limit?: number },
+      {
+        opportunities: StockOpportunity[];
+        isDemoData: boolean;
+        radiusMeters?: number;
+        days: number;
+        reason?: string;
+      }
+    >("merchant.opportunities", (input) =>
+      apiFetch(`/merchant/demand/opportunities${qs(input ?? {})}`),
+    ),
+    heatmap: Q<
+      { days?: number; category?: string; limit?: number },
+      {
+        points: HeatmapPoint[];
+        isDemoData: boolean;
+        bucketMeters: number;
+        radiusMeters: number;
+        days: number;
+        privacyNote: string;
+        reason?: string;
+      }
+    >("merchant.heatmap", (input) =>
+      apiFetch(`/merchant/demand/heatmap${qs(input ?? {})}`),
+    ),
+    impact: Q<
+      { days?: number },
+      {
+        metrics: ImpactMetrics;
+        neighborhoodInsight: NeighborhoodInsight | null;
+        isDemoData: boolean;
+        days: number;
+      }
+    >("merchant.impact", (input) => apiFetch(`/merchant/demand/impact${qs(input ?? {})}`)),
   },
 
   useUtils: () => {
@@ -359,6 +532,14 @@ export const api = {
         inbox: { invalidate: byKey("merchant.inbox") },
         inventory: { invalidate: byKey("merchant.inventory") },
         khata: { invalidate: byKey("merchant.khata") },
+        demand: { invalidate: byKey("merchant.demand") },
+        opportunities: { invalidate: byKey("merchant.opportunities") },
+        heatmap: { invalidate: byKey("merchant.heatmap") },
+        impact: { invalidate: byKey("merchant.impact") },
+      },
+      request: {
+        detail: (id: string) => qc.invalidateQueries({ queryKey: ["request.detail", { id }] }),
+        offers: (id: string) => qc.invalidateQueries({ queryKey: ["request.offers", { id }] }),
       },
     };
   },

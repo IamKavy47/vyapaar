@@ -17,8 +17,9 @@ pages, just JSON instead of form posts.
 Field naming: responses use the frontend's camelCase shapes (name,
 categoryKey, distanceMeters, ...) so the React app needs no mapping layer.
 """
+import asyncio
 from datetime import timedelta
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -38,12 +39,13 @@ from app.models.inventory import product_key
 from app.models.khata import EntryType
 from app.models.merchant_match import MatchStatus
 from app.models.product_request import RequestStatus
-from app.models.shop import category_label, normalize_category
+from app.models.shop import CATEGORY_AFFINITY, category_label, normalize_category
 from app.models.user import UserRole, utcnow
 from app.schemas.intent import ProductIntent
 from app.services import (
-    auth_service, inventory_service, khata_service, merchant_matching,
-    notification_service, search_service,
+    auth_service, demand_engine, demo_service, inventory_service,
+    khata_service, merchant_matching, notification_service, opportunity_service,
+    search_service, trust_service,
 )
 from app.services.auth_service import AuthError
 from app.services.location_service import update_customer_location
@@ -160,12 +162,19 @@ def request_public(doc: dict) -> dict:
         "inputType": doc.get("input_type", "text"),
         "rawText": doc.get("raw_text"),
         "matchedCount": doc.get("matched_count", 0),
+        "selectedMatchId": _oid(doc.get("selected_match_id")) or None,
+        "selectedAt": _iso(doc.get("selected_at")),
+        "offerWindowExpiresAt": _iso(doc.get("offer_window_expires_at")),
+        "customerNotifiedAt": _iso(doc.get("customer_notified_at")),
         "createdAt": _iso(doc.get("created_at")),
     }
 
 
 def offer_public(match: dict, *, shop: Optional[dict] = None,
-                 request: Optional[dict] = None, has_hint: bool = False) -> dict:
+                 request: Optional[dict] = None, has_hint: bool = False,
+                 trust: Optional[dict] = None, freshness: Optional[dict] = None,
+                 why: Optional[List[str]] = None,
+                 inventory_updated_at=None) -> dict:
     out = {
         "id": _oid(match.get("_id")),
         "requestId": match.get("request_id"),
@@ -174,15 +183,36 @@ def offer_public(match: dict, *, shop: Optional[dict] = None,
         "price": match.get("price"),
         "distanceMeters": round(match.get("distance_meters") or 0),
         "matchScore": match.get("match_score", 0.0),
+        "scoreBreakdown": match.get("score_breakdown") or {},
         "hasInventoryHint": has_hint,
+        "source": match.get("source") or "real",
+        "isDemoSimulated": (match.get("source") or "real") == "demo_simulated",
         "createdAt": _iso(match.get("created_at")),
+        "notifiedAt": _iso(match.get("notified_at")),
         "respondedAt": _iso(match.get("responded_at")),
+        "responseSeconds": _response_seconds(match),
+        "inventoryUpdatedAt": _iso(inventory_updated_at),
+        "trust": trust,
+        "freshness": freshness,
+        "whyRecommended": why or [],
     }
     if shop is not None:
         out["shop"] = shop_public(shop)
     if request is not None:
         out["request"] = request_public(request)
     return out
+
+
+def _response_seconds(match: dict) -> Optional[int]:
+    notified = match.get("notified_at")
+    responded = match.get("responded_at")
+    if not notified or not responded:
+        return None
+    try:
+        delta = (responded - notified).total_seconds()
+        return int(delta) if delta >= 0 else None
+    except Exception:
+        return None
 
 
 # ------------------------------------------------------------------- security
@@ -723,6 +753,9 @@ async def web_create_request(body: CreateRequestBody, user: dict = Depends(requi
     if not intent.product:
         _error(422, "Could not identify a product from that text.")
 
+    intent_intent_provider = intent.provider or "ai"
+    is_rule_based = intent.provider == "rules"
+
     request_doc = await search_service.create_request(
         intent=intent, customer_id=user["_id"],
         telegram_user_id=user.get("telegram_user_id"),
@@ -731,6 +764,15 @@ async def web_create_request(body: CreateRequestBody, user: dict = Depends(requi
         raw_text=body.rawText,
     )
     result = await search_service.run_matching(request_doc, notify=True)
+
+    # Deterministic demo simulation: when DEMO_MODE is on AND no live Telegram
+    # polling is running, schedule simulated merchant responses for the
+    # flagship scenario (Teflon Tape). Each simulated response is tagged
+    # source="demo_simulated" so the customer UI can label it clearly.
+    try:
+        await demo_service.maybe_schedule_demo_responses(request_doc, result.candidates)
+    except Exception as exc:
+        logger.warning("demo simulation failed (non-fatal): %s", exc)
 
     candidates = []
     for cand in result.candidates:
@@ -756,6 +798,8 @@ async def web_create_request(body: CreateRequestBody, user: dict = Depends(requi
             "quantity": intent.quantity,
             "unit": intent.unit,
             "confidence": intent.confidence,
+            "provider": intent_intent_provider,
+            "isRuleBased": is_rule_based,
         },
         "candidates": candidates,
     }
@@ -768,6 +812,13 @@ async def web_my_requests(user: dict = Depends(require_user)):
 
 
 async def _offers_for_request(request_doc: dict) -> List[dict]:
+    """All merchant_match rows for a request, with shop, inventory hint,
+    trust score, freshness labels and a why-recommended explanation attached.
+
+    Sorted by match_score descending so the customer sees the most plausible
+    shop first; the frontend then re-sorts by the user's chosen criterion
+    (best overall / nearest / lowest price / most reliable / fastest response).
+    """
     cursor = m.merchant_matches().find(
         {"request_id": request_doc["request_id"]}
     ).sort("match_score", -1)
@@ -776,17 +827,79 @@ async def _offers_for_request(request_doc: dict) -> List[dict]:
     async for match in cursor:
         shop = await m.shops().find_one({"_id": match["merchant_id"]})
         hint = False
+        inv_updated = None
         if shop:
-            hint = await m.inventory_items().find_one(
-                {
-                    "shop_id": shop["_id"],
-                    "product_key": {"$in": keys},
-                    "quantity": {"$gt": 0},
-                    "in_stock": {"$ne": False},
-                }
-            ) is not None
-        offers.append(offer_public(match, shop=shop, has_hint=hint))
+            inv = await m.inventory_items().find_one({
+                "shop_id": shop["_id"],
+                "product_key": {"$in": keys},
+            })
+            if inv and (inv.get("quantity") or 0) > 0 and inv.get("in_stock", True):
+                hint = True
+            if inv:
+                inv_updated = inv.get("updated_at") or inv.get("created_at")
+        # Trust score + freshness + explanation.
+        trust = await _trust_for_shop(shop)
+        freshness = trust_service.freshness_label(
+            responded_at=match.get("responded_at"),
+            notified_at=match.get("notified_at"),
+            has_inventory_hint=hint,
+            inventory_updated_at=inv_updated,
+            has_price=match.get("price") is not None,
+        )
+        why = opportunity_service.explain_match(
+            request=request_doc, shop=shop or {},
+            score_breakdown=match.get("score_breakdown") or {},
+            distance_meters=match.get("distance_meters") or 0,
+            has_inventory_hint=hint,
+            trust_label=(trust or {}).get("label"),
+        )
+        offers.append(offer_public(
+            match, shop=shop, has_hint=hint,
+            trust=trust, freshness=freshness, why=why,
+            inventory_updated_at=inv_updated,
+        ))
     return offers
+
+
+async def _trust_for_shop(shop: Optional[dict]) -> Optional[dict]:
+    """Compute the trust score for a shop, pulling its recent response-time
+    history from merchant_matches. Returns None when shop is None."""
+    if not shop:
+        return None
+    shop_id = shop["_id"]
+    notified = int(shop.get("notified_count") or 0)
+    accepted = int(shop.get("accepted_count") or 0)
+    declined = int(shop.get("declined_count") or 0)
+    # Pull the last 20 match rows for this shop to compute median response time.
+    response_times: List[int] = []
+    cursor = m.merchant_matches().find({
+        "merchant_id": shop_id,
+        "notified_at": {"$ne": None},
+        "responded_at": {"$ne": None},
+    }).sort("responded_at", -1).limit(20)
+    async for row in cursor:
+        secs = _response_seconds(row)
+        if secs is not None:
+            response_times.append(secs)
+    completed = await m.product_requests().count_documents({
+        "selected_match_id": {"$in": await _match_ids_for_shop(shop_id)},
+    })
+    return trust_service.compute_trust_score(
+        notified_count=notified,
+        accepted_count=accepted,
+        declined_count=declined,
+        completed_selections=completed,
+        response_times_seconds=response_times,
+        is_verified=bool(shop.get("is_verified")),
+        account_age_days=None,
+    )
+
+
+async def _match_ids_for_shop(shop_id) -> List:
+    """Return all merchant_match _ids for a shop — used to count customer
+    selections of this shop."""
+    cursor = m.merchant_matches().find({"merchant_id": shop_id}, {"_id": 1})
+    return [doc["_id"] async for doc in cursor]
 
 
 @router.get("/requests/{request_id}")
@@ -798,43 +911,53 @@ async def web_request_detail(request_id: str, user: dict = Depends(require_user)
     return {"request": request_public(doc), "offers": offers}
 
 
+@router.get("/requests/{request_id}/offers")
+async def web_request_offers(request_id: str, user: dict = Depends(require_user)):
+    """Explicit offers-only endpoint (the detail endpoint also returns them).
+
+    Useful for the customer compare screen to poll JUST the offers without
+    re-fetching the request envelope every time.
+    """
+    doc = await search_service.get_request(request_id)
+    if not doc or str(doc.get("customer_id")) != str(user["_id"]):
+        _error(404, "Request not found")
+    return {"offers": await _offers_for_request(doc)}
+
+
 @router.post("/requests/choose")
 async def web_choose_offer(body: ChooseBody, user: dict = Depends(require_user)):
-    """Customer picks the winning shop. The request closes, other pending
-    offers expire, and the shop gets a Telegram heads-up if it linked one."""
+    """Customer picks the winning shop. Exactly one selection per request.
+
+    Delegates to ``search_service.select_offer`` which atomically claims the
+    selection (using a MongoDB filter on selected_match_id==None) so a second
+    concurrent attempt is safely rejected. On success: the chosen shop is
+    notified via Telegram, the losing shops that said YES get a 'someone
+    else won' ping, and the customer receives the final shop details + map
+    pin so they can walk over and buy.
+    """
     match = await merchant_matching.get_match(body.offerId)
     if not match:
         _error(404, "Offer not found")
-    request_doc = await search_service.get_request(match["request_id"])
-    if not request_doc or str(request_doc.get("customer_id")) != str(user["_id"]):
-        _error(403, "Not your request")
-    if match.get("status") != MatchStatus.ACCEPTED.value:
-        _error(400, "Shop has not confirmed yet")
-
-    await m.product_requests().update_one(
-        {"request_id": request_doc["request_id"]},
-        {"$set": {"status": RequestStatus.COMPLETED.value, "updated_at": utcnow()}},
+    request_id = match["request_id"]
+    result = await search_service.select_offer(
+        request_id=request_id, match_id=match["_id"], customer_id=user["_id"],
     )
-    await m.merchant_matches().update_many(
-        {
-            "request_id": request_doc["request_id"],
-            "_id": {"$ne": match["_id"]},
-            "status": {"$in": [MatchStatus.PENDING.value, MatchStatus.NOTIFIED.value]},
-        },
-        {"$set": {"status": MatchStatus.EXPIRED.value}},
-    )
-
-    shop = await m.shops().find_one({"_id": match["merchant_id"]})
-    if shop and shop.get("telegram_user_id"):
-        await notification_service.send_message(
-            shop["telegram_user_id"],
-            "🎉 Customer ne aapko chuna!\n\n"
-            f"📦 {request_doc.get('product') or 'Item'}"
-            + (f" — ₹{match['price']:g}" if match.get("price") else "")
-            + "\nCustomer dukaan par aa sakta hai. Stock taiyaar rakhiye.",
-            kind="customer_chose_you",
-        )
-    return {"ok": True}
+    if not result.get("ok"):
+        code = result.get("code", "unknown")
+        if code == "not_owner":
+            _error(403, "Not your request")
+        if code == "not_found":
+            _error(404, "Offer not found")
+        if code == "not_accepted":
+            _error(400, "Shop has not confirmed yet")
+        if code == "already_selected":
+            _error(409, "A shop has already been chosen for this request")
+        _error(400, result.get("message", "Could not select offer"))
+    return {
+        "ok": True,
+        "selectedMatchId": result.get("selected_match_id"),
+        "shopId": result.get("shop_id"),
+    }
 
 
 # ------------------------------------------------------------------ merchant
@@ -1011,6 +1134,253 @@ async def web_add_khata(body: AddKhataBody, shop: dict = Depends(require_my_shop
 
 
 @router.get("/merchant/demand")
-async def web_merchant_demand(shop: dict = Depends(require_my_shop)):
-    products, categories, total = await _request_stats(days=30, limit=12)
-    return {"products": products, "categories": categories, "total": total}
+async def web_merchant_demand(shop: dict = Depends(require_my_shop),
+                              days: int = Query(30, ge=1, le=365)):
+    """Honest demand dashboard data for a merchant.
+
+    Returns BOTH the legacy ``products``/``categories`` rollups AND the new
+    ``honestStats`` block that distinguishes unique customer requests from
+    merchant responses (one request with 5 merchant YESes still counts as 1
+    unique customer request, never 5).
+    """
+    coords = from_geojson_point(shop.get("location"))
+    lat, lng = coords if coords else (None, None)
+    radius = settings.OPPORTUNITY_RADIUS_METERS
+    if lat is not None and lng is not None:
+        products = await demand_engine.top_unique_requested_products(
+            latitude=lat, longitude=lng, radius_meters=radius, days=days, limit=12,
+        )
+    else:
+        products = await demand_engine.top_unique_requested_products(days=days, limit=12)
+    # Categories rollup from the same unique-request source.
+    by_cat: Dict[str, int] = {}
+    for p in products:
+        cat = FE_CATEGORY.get(p.get("category") or "other", "other")
+        by_cat[cat] = by_cat.get(cat, 0) + p.get("uniqueRequests", 0)
+    categories = sorted(
+        ({"categoryKey": k, "requests": v} for k, v in by_cat.items()),
+        key=lambda c: -c["requests"],
+    )
+    honest = await demand_engine.honest_demand_stats(
+        latitude=lat, longitude=lng, radius_meters=radius, days=days,
+    )
+    return {
+        "products": products,
+        "categories": categories,
+        "total": honest.get("uniqueCustomerRequests", 0),
+        "honestStats": honest,
+        "isDemoData": bool(settings.DEMO_MODE),
+        "days": days,
+    }
+
+
+@router.get("/merchant/demand/opportunities")
+async def web_merchant_opportunities(shop: dict = Depends(require_my_shop),
+                                     days: int = Query(30, ge=1, le=365),
+                                     limit: int = Query(8, ge=1, le=20)):
+    """Stock opportunity recommendations for this merchant.
+
+    For each nearby top-unmet-demand product, computes an explainable
+    opportunity score (deterministic, no ML) and a suggested stocking quantity.
+    Filters out products the merchant already stocks, and products unrelated
+    to the merchant's category.
+    """
+    coords = from_geojson_point(shop.get("location"))
+    if not coords:
+        return {"opportunities": [], "isDemoData": bool(settings.DEMO_MODE),
+                "reason": "Set your shop location to see stock opportunities."}
+    lat, lng = coords
+    radius = settings.OPPORTUNITY_RADIUS_METERS
+
+    # 1. Top unmet-demand products nearby (from product_requests, deduped by request_id).
+    demand_rows = await demand_engine.top_unique_requested_products(
+        latitude=lat, longitude=lng, radius_meters=radius, days=days, limit=limit * 3,
+    )
+    if not demand_rows:
+        return {"opportunities": [], "isDemoData": bool(settings.DEMO_MODE),
+                "reason": "Abhi is area se koi demand data nahi hai."}
+
+    shop_category = normalize_category(shop.get("category"))
+    rows = []
+    for row in demand_rows:
+        product_cat = normalize_category(row.get("category"))
+        # Category affinity between the product's category and the merchant's.
+        affinity = float(
+            CATEGORY_AFFINITY.get(product_cat, {}).get(shop_category, 0.1)
+        )
+        if affinity < 0.2:
+            continue  # Don't recommend products unrelated to this shop.
+        # Does this merchant already stock this product?
+        already = await m.inventory_items().find_one({
+            "shop_id": shop["_id"], "product_key": product_key(row["product"]),
+        })
+        nearby_coverage = await m.inventory_items().count_documents({
+            "product_key": product_key(row["product"]),
+        })
+        # Trend ratio: last 7d vs previous 7d unique requests.
+        trend = await _trend_ratio(lat=lat, lng=lng, radius=radius,
+                                   product_key=product_key(row["product"]))
+        rows.append(opportunity_service.opportunity_score(
+            product=row["product"], category=row.get("category"),
+            unique_requests=row["uniqueRequests"],
+            unavailable_requests=row["unavailable"],
+            available_requests=row["available"],
+            trend_ratio=trend,
+            average_search_distance_meters=row.get("averageSearchDistanceMeters"),
+            nearby_inventory_coverage=nearby_coverage,
+            merchant_category_affinity=affinity,
+            merchant_already_stocks=bool(already),
+        ))
+    rows = opportunity_service.sort_opportunities(rows)[:limit]
+    return {
+        "opportunities": rows,
+        "isDemoData": bool(settings.DEMO_MODE),
+        "radiusMeters": radius,
+        "days": days,
+    }
+
+
+async def _trend_ratio(*, lat: float, lng: float, radius: int, product_key: str) -> Optional[float]:
+    """Ratio of last-7d unique requests vs previous-7d for a product."""
+    from datetime import timedelta as _td
+    now = utcnow()
+    last_7 = now - _td(days=7)
+    prev_7_start = now - _td(days=14)
+    last_count = await m.product_requests().count_documents({
+        "product_key": product_key,
+        "created_at": {"$gte": last_7},
+        "location": {"$near": {
+            "$geometry": {"type": "Point", "coordinates": [lng, lat]},
+            "$maxDistance": radius,
+        }},
+    })
+    prev_count = await m.product_requests().count_documents({
+        "product_key": product_key,
+        "created_at": {"$gte": prev_7_start, "$lt": last_7},
+        "location": {"$near": {
+            "$geometry": {"type": "Point", "coordinates": [lng, lat]},
+            "$maxDistance": radius,
+        }},
+    })
+    if prev_count == 0:
+        return None if last_count == 0 else 2.0  # new demand → treat as rising
+    return last_count / max(1, prev_count)
+
+
+@router.get("/merchant/demand/heatmap")
+async def web_merchant_heatmap(shop: dict = Depends(require_my_shop),
+                               days: int = Query(30, ge=1, le=365),
+                               category: Optional[str] = Query(None),
+                               limit: int = Query(60, ge=1, le=200)):
+    """Privacy-safe demand heatmap centred on the merchant's shop.
+
+    Aggregates demand into ~300m buckets so individual customer locations are
+    never exposed. Each point represents a *bucket* of demand for one product,
+    deduplicated by request_id (one customer request = one bucket entry,
+    regardless of how many merchants were asked).
+    """
+    coords = from_geojson_point(shop.get("location"))
+    if not coords:
+        return {"points": [], "isDemoData": bool(settings.DEMO_MODE),
+                "reason": "Set your shop location to see the demand heatmap."}
+    lat, lng = coords
+    points = await demand_engine.demand_heatmap(
+        latitude=lat, longitude=lng,
+        radius_meters=settings.OPPORTUNITY_RADIUS_METERS,
+        days=days, category=category, limit=limit,
+    )
+    return {
+        "points": points,
+        "isDemoData": bool(settings.DEMO_MODE),
+        "bucketMeters": settings.HEATMAP_BUCKET_METERS,
+        "radiusMeters": settings.OPPORTUNITY_RADIUS_METERS,
+        "days": days,
+        "privacyNote": (
+            "Demand points are aggregated into ~300m buckets for privacy. "
+            "Individual customer locations are never exposed."
+        ),
+    }
+
+
+@router.get("/merchant/demand/impact")
+async def web_merchant_impact(shop: dict = Depends(require_my_shop),
+                              days: int = Query(30, ge=1, le=365)):
+    """Judge-friendly impact dashboard — understood in under 30 seconds.
+
+    Honest metrics only:
+      - Unique customer requests
+      - Requests matched to ≥1 shop
+      - Average search radius (reduced by matching to nearby shops)
+      - Zero-inventory matches (the zero-inventory innovation)
+      - Successful customer selections
+      - Merchant response rate
+      - Unmet demand discovered (opportunities for the neighborhood)
+      - Estimated search distance saved (labelled as an estimate)
+    """
+    coords = from_geojson_point(shop.get("location"))
+    lat, lng = coords if coords else (None, None)
+    radius = settings.OPPORTUNITY_RADIUS_METERS
+    honest = await demand_engine.honest_demand_stats(
+        latitude=lat, longitude=lng, radius_meters=radius, days=days,
+    )
+    # Estimated search distance saved: each successful match replaces a
+    # hypothetical 5km "asked the whole city" search with the actual average
+    # radius used. Clearly labelled as an estimate, not a hard number.
+    avg_radius = honest.get("avgSearchDistanceMeters") or 0
+    matched = honest.get("requestsMatched", 0)
+    hypothetical_search = settings.MAX_MATCH_RADIUS_METERS  # 5km
+    estimated_saved_m = max(0, hypothetical_search - avg_radius) * matched if matched else 0
+    insight = await demand_engine.neighborhood_insight(
+        latitude=lat, longitude=lng, radius_meters=radius, days=days,
+    ) if lat is not None else None
+    return {
+        "metrics": {
+            "uniqueCustomerRequests": honest.get("uniqueCustomerRequests", 0),
+            "requestsMatched": matched,
+            "requestsUnmatched": honest.get("requestsUnmatched", 0),
+            "zeroInventoryMatches": honest.get("zeroInventoryMatches", 0),
+            "successfulCustomerSelections": honest.get("successfulCustomerSelections", 0),
+            "merchantResponseAttempts": honest.get("merchantResponseAttempts", 0),
+            "availableResponses": honest.get("availableResponses", 0),
+            "unavailableResponses": honest.get("unavailableResponses", 0),
+            "merchantResponseRate": (
+                round((honest.get("availableResponses", 0)
+                       + honest.get("unavailableResponses", 0))
+                      / max(1, honest.get("merchantResponseAttempts", 0)), 3)
+            ),
+            "avgSearchDistanceMeters": avg_radius,
+            "estimatedSearchDistanceSavedMeters": int(estimated_saved_m),
+        },
+        "neighborhoodInsight": insight,
+        "isDemoData": bool(settings.DEMO_MODE),
+        "days": days,
+    }
+
+
+class PlanFromOpportunityBody(BaseModel):
+    product: str = Field(min_length=2, max_length=120)
+    quantity: float = Field(gt=0)
+    unit: str = Field(min_length=1, max_length=32)
+    price: Optional[float] = Field(default=None, gt=0)
+
+
+@router.post("/merchant/inventory/plan")
+async def web_plan_from_opportunity(body: PlanFromOpportunityBody,
+                                     shop: dict = Depends(require_my_shop)):
+    """Prefill the inventory form from a stock opportunity recommendation.
+
+    Does NOT add stock — the merchant must explicitly confirm via the regular
+    POST /merchant/inventory endpoint. This endpoint just creates (or
+    updates) a row marked as ``in_stock=False`` so the merchant sees it in
+    their plan list and can convert it to real stock with one tap.
+    """
+    doc = await inventory_service.upsert_item(
+        shop_id=shop["_id"], product=body.product, quantity=body.quantity,
+        unit=body.unit, price=body.price, source="opportunity",
+    )
+    # Mark the planned row as out-of-stock until the merchant confirms.
+    await m.inventory_items().update_one(
+        {"shop_id": doc["shop_id"], "product_key": doc["product_key"]},
+        {"$set": {"in_stock": False, "is_plan": True, "updated_at": utcnow()}},
+    )
+    return {"ok": True, "productId": str(doc.get("_id") or doc.get("product_key"))}

@@ -28,5 +28,10 @@ def build_match_document(
         "price": None,
         "notified_at": None,
         "responded_at": None,
+        # Provenance tag: "real" came from a live Telegram button tap or web
+        # merchant click; "demo_simulated" was injected by the deterministic
+        # demo service so a hackathon audience can see the loop end-to-end
+        # without real merchants. Surfaced to the customer as a clear label.
+        "source": "real",
         "created_at": now,
     }
