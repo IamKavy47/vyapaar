@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { Store, ShoppingBag, Wrench } from "lucide-react";
 import { api as trpc } from "@/lib/api";
@@ -13,7 +13,7 @@ type ShopType = "shop" | "vendor" | "service";
 const SHOP_TYPES: { key: ShopType; label: string; hindi: string; desc: string; icon: typeof Store }[] = [
   { key: "shop", label: "Dukaan", hindi: "दुकान", desc: "Fixed shop with products — kirana, hardware, medical, etc.", icon: Store },
   { key: "vendor", label: "Thela", hindi: "ठेला", desc: "Street vendor — mobile cart, fruits, vegetables, snacks.", icon: ShoppingBag },
-  { key: "service", label: "Seva", hindi: "सेवा", desc: "Service provider — plumber, electrician, tailor, repair.", icon: Wrench },
+  { key: "service", label: "Professional", hindi: "प्रोफेशनल", desc: "Service provider — plumber, electrician, tailor, repair.", icon: Wrench },
 ];
 
 const SERVICE_LINES = [
@@ -31,13 +31,22 @@ const SERVICE_LINES = [
 
 export default function Onboarding() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const utils = trpc.useUtils();
   const [busy, setBusy] = useState(false);
 
   const createShop = trpc.profile.createShop.useMutation();
   const location = useLocation();
 
-  const [shopType, setShopType] = useState<ShopType>("shop");
+  // Pre-select the shop type from the URL param (?type=professional / ?type=shop)
+  // — passed from the Login page when the user picks "Professional" or "Dukaandaar".
+  const initialType = (() => {
+    const t = searchParams.get("type");
+    if (t === "professional") return "service" as ShopType;
+    if (t === "shop") return "shop" as ShopType;
+    return "shop" as ShopType;
+  })();
+  const [shopType, setShopType] = useState<ShopType>(initialType);
   const [newShop, setNewShop] = useState({
     name: "", categoryKey: "kirana", address: "", phone: "",
     serviceLine: "plumber",
@@ -93,7 +102,7 @@ export default function Onboarding() {
           {heading}
         </h1>
         <p className="text-[13.5px] font-bold text-brand-ink/70 mt-1.5">
-          Pehle batayen aap kya hain — dukaan, thela, ya seva.
+          Pehle batayen aap kya hain — dukaan, thela, ya professional.
         </p>
       </div>
 
@@ -131,7 +140,7 @@ export default function Onboarding() {
           {shopType === "service" && (
             <div>
               <div className="text-[10.5px] font-extrabold uppercase tracking-wide text-brand-ink/55 mb-1.5">
-                Aap ki seva?
+                Aap ka kaun sa profession?
               </div>
               <div className="flex flex-wrap gap-2">
                 {SERVICE_LINES.map((s) => (

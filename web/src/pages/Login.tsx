@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { ShoppingBasket, Mic, Zap, MapPin, Eye, EyeOff, Store, ShoppingBag, Phone, ShieldCheck } from "lucide-react";
+import { ShoppingBasket, Mic, Zap, MapPin, Eye, EyeOff, Store, ShoppingBag, Phone, ShieldCheck, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
 import { api, ApiError } from "@/lib/api";
@@ -22,7 +22,9 @@ export default function Login() {
   const [mode, setMode] = useState<Mode>("login");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
-  const [role, setRole] = useState<"customer" | "shopkeeper">("customer");
+  // UI role: customer | shopkeeper | professional
+  // Backend role: customer | shopkeeper (professional maps to shopkeeper + shop_type=service)
+  const [role, setRole] = useState<"customer" | "shopkeeper" | "professional">("customer");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -88,18 +90,25 @@ export default function Login() {
       if (mode === "login") {
         await login.mutateAsync({ email: email.trim(), password });
       } else {
+        // "professional" is a UI-only role — backend stores it as
+        // "shopkeeper" (the Onboarding page then sets shop_type=service).
+        const backendRole = role === "professional" ? "shopkeeper" : role;
         await register.mutateAsync({
           fullName: fullName.trim(),
           email: email.trim(),
           phone: phone.trim(),
           password,
-          role,
+          role: backendRole as "customer" | "shopkeeper",
           otp: otp.trim(),
         });
       }
       await refresh();
       toast.success(mode === "login" ? "Namaste! Wapas aa gaye." : "Account ban gaya! Phone verified ✓");
-      navigate("/", { replace: true });
+      // Pass the professional hint to the Onboarding page so it pre-selects
+      // the right shop type without the user having to pick again.
+      const onboardingType = role === "professional" ? "?type=professional"
+        : role === "shopkeeper" ? "?type=shop" : "";
+      navigate(onboardingType ? `/onboarding${onboardingType}` : "/", { replace: true });
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Kuch gadbad ho gayi — phir try karo.");
     } finally {
@@ -192,17 +201,18 @@ export default function Login() {
                     {otpSent ? "Resend" : "Send OTP"}
                   </button>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   {([
                     ["customer", "Customer", ShoppingBag],
                     ["shopkeeper", "Dukaandaar", Store],
+                    ["professional", "Professional", Wrench],
                   ] as const).map(([value, label, Icon]) => (
                     <button
                       key={value}
                       type="button"
                       onClick={() => setRole(value)}
                       className={clsx(
-                        "rounded-2xl border-2 py-3 text-[12px] font-extrabold flex items-center justify-center gap-1.5",
+                        "rounded-2xl border-2 py-2.5 text-[11px] font-extrabold flex flex-col items-center justify-center gap-1",
                         role === value
                           ? "bg-brand-ink text-brand-yellow border-brand-ink"
                           : "bg-background border-brand-ink/15 text-brand-ink/60",

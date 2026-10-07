@@ -71,7 +71,7 @@ export default function Browse() {
     <div>
       <TopBar
         title="Browse"
-        sub="Paas ki dukaanein, thele, aur seva — sabhi verified"
+        sub="Paas ki dukaanein, thele, aur professionals — sabhi verified"
         right={
           <div className="flex items-center gap-1 rounded-full border-2 border-brand-ink/15 bg-card p-1">
             <button
@@ -102,7 +102,7 @@ export default function Browse() {
       <div className="grid grid-cols-2 gap-1.5 rounded-full border-2 border-brand-ink/15 bg-card p-1 mb-3">
         {([
           ["products", "Products", ShoppingBag],
-          ["services", "Services", Wrench],
+          ["services", "Professionals", Wrench],
         ] as const).map(([key, label, Icon]) => (
           <button
             key={key}
@@ -126,7 +126,7 @@ export default function Browse() {
         <input
           value={q}
           onChange={(e) => { setQ(e.target.value); setPage(1); }}
-          placeholder={tab === "services" ? "Service search — jaise: plumber, electrician…" : "Product search — jaise: Teflon Tape, Fevicol…"}
+          placeholder={tab === "services" ? "Search professionals — jaise: plumber, electrician…" : "Product search — jaise: Teflon Tape, Fevicol…"}
           className="flex-1 min-w-0 bg-transparent px-3 py-3.5 text-[14.5px] font-bold outline-none placeholder:text-brand-ink/35"
         />
       </div>
