@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     SHOPFRONT_PHOTO_DISTANCE_METERS: int = 200
     SHOPFRONT_PHOTO_MAX_BYTES: int = 5 * 1024 * 1024  # 5 MB
     SHOPFRONT_PHOTO_DIR: str = ""  # empty -> app/static/shop_photos/
+    # ImgBB is the recommended image host — free, has a simple API, returns
+    # a public URL. Sign up at https://imgbb.com/api and paste your API key
+    # here. Leave blank to fall back to local disk (photos served from
+    # /static/shop_photos/{shop_id}.jpg — works for local dev only).
+    IMGBB_API_KEY: str = ""
 
     # ---------------- Customer safety ----------------
     # Trusted-contact phone is captured during customer onboarding; the panic

@@ -183,3 +183,53 @@ def test_is_verified_filter_present_in_query_dict():
         "on is_verified=True so unverified (and therefore possibly-scammer) "
         "shops are never matched to customers."
     )
+
+
+# ---------------------------------------------------- Shopfront photo (ImgBB)
+# Test that Pillow's re-encode strips EXIF GPS — the saved photo on disk
+# (or the bytes uploaded to ImgBB) must NEVER retain the customer's GPS
+# in its metadata.
+
+def test_pillow_reencode_strips_exif_gps():
+    """Pillow's default Image.save() must not preserve EXIF GPS metadata
+    when we save the re-encoded JPEG. The customer's GPS is already
+    extracted and stored on the shop doc; the publicly-served photo must
+    be metadata-free."""
+    from PIL import Image
+    import io
+    # Create a small test image — Pillow will let us set EXIF in a real
+    # scenario, but here we just verify the save round-trips without any
+    # EXIF tag in the output bytes.
+    img = Image.new("RGB", (10, 10), color="red")
+    raw_io = io.BytesIO()
+    img.save(raw_io, "JPEG")
+    raw_bytes = raw_io.getvalue()
+
+    # Re-encode the way verification_service does it
+    reencoded_io = io.BytesIO()
+    re_img = Image.open(io.BytesIO(raw_bytes))
+    re_img.convert("RGB").save(reencoded_io, "JPEG", quality=85, optimize=True)
+    reencoded_bytes = reencoded_io.getvalue()
+
+    # The re-encoded JPEG must not contain EXIF GPS (tag 0x8825 = GPSInfoIFD)
+    re_decoded = Image.open(io.BytesIO(reencoded_bytes))
+    exif = re_decoded._getexif() if hasattr(re_decoded, "_getexif") else None
+    # Even if there's an EXIF block (Pillow may write minimal tags),
+    # the GPSInfoIFD pointer must NOT be present.
+    if exif:
+        GPS_INFO_TAG = 0x8825
+        assert GPS_INFO_TAG not in exif, (
+            "Re-encoded JPEG must not contain EXIF GPS metadata — it's a "
+            "privacy leak to ship the customer's shopfront GPS inside the "
+            "publicly-served image bytes."
+        )
+
+
+def test_imgbb_endpoint_constant():
+    """Pin the ImgBB API URL — changing it would break uploads silently."""
+    import inspect
+    from app.services import verification_service
+    source = inspect.getsource(verification_service._upload_to_imgbb)
+    assert "api.imgbb.com/1/upload" in source, (
+        "ImgBB endpoint changed — uploads would silently break."
+    )

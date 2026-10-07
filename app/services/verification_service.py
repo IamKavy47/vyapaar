@@ -11,10 +11,13 @@ Flow:
   4. This service parses the JPEG's EXIF GPS tags (cross-check #1) and
      compares both the EXIF GPS and the browser GPS to the registered shop
      location. Both must be within SHOPFRONT_PHOTO_DISTANCE_METERS (200m).
-  5. The photo is saved to ``app/static/shop_photos/{shop_id}.jpg`` so it's
-     served by FastAPI's static mount, and the shop doc is updated with
-     the photo URL + both GPS readings + ``verification_status="photo_pending"``.
-  6. An admin (you, for the hackathon) reviews the pending photos via the
+  5. The photo is **EXIF-stripped** (privacy — the saved/uploaded photo
+     must not retain the GPS in its metadata) and uploaded to ImgBB if
+     ``IMGBB_API_KEY`` is configured, otherwise saved to disk under
+     ``app/static/shop_photos/{shop_id}.jpg``.
+  6. The shop doc is updated with the photo URL + both GPS readings +
+     ``verification_status="photo_pending"``.
+  7. An admin (you, for the hackathon) reviews the pending photos via the
      /admin/shops/pending page and approves each one — flipping
      ``is_verified=True`` + ``verification_status="verified"``.
 
@@ -181,14 +184,31 @@ async def upload_shopfront_photo(
     photo_dir.mkdir(parents=True, exist_ok=True)
     # Always overwrite the previous photo for this shop (one photo per shop).
     out_path = photo_dir / f"{shop_id}.jpg"
-    # Re-encode as JPEG for size + sanitisation (strips any non-EXIF payload).
+    # Re-encode as JPEG for size + sanitisation. Pillow's default save
+    # strips EXIF metadata (including GPS) — the saved photo on disk must
+    # NOT retain the GPS coordinates, since it's a publicly-served file.
+    # The GPS has already been extracted and stored on the shop doc
+    # (photo_browser_location + photo_exif_location) for verification;
+    # the photo itself is just the visual.
+    sanitised_bytes_io = io.BytesIO()
     try:
         img = Image.open(io.BytesIO(photo_bytes))
-        img.convert("RGB").save(out_path, "JPEG", quality=85, optimize=True)
+        img.convert("RGB").save(sanitised_bytes_io, "JPEG", quality=85, optimize=True)
     except Exception as exc:
-        raise VerificationError(f"Could not save photo: {exc}") from exc
+        raise VerificationError(f"Could not process photo: {exc}") from exc
+    sanitised_bytes = sanitised_bytes_io.getvalue()
 
-    photo_url = f"/static/shop_photos/{shop_id}.jpg"
+    # Upload to ImgBB if configured, else fall back to disk (local dev only).
+    if settings.IMGBB_API_KEY:
+        photo_url = await _upload_to_imgbb(sanitised_bytes)
+        if not photo_url:
+            raise VerificationError(
+                "Photo upload to ImgBB failed. Please try again in a moment."
+            )
+    else:
+        out_path.write_bytes(sanitised_bytes)
+        photo_url = f"/static/shop_photos/{shop_id}.jpg"
+
     now = utcnow()
     await m.shops().update_one(
         {"_id": shop_id},
@@ -201,7 +221,7 @@ async def upload_shopfront_photo(
             "updated_at": now,
         }},
     )
-    logger.info("shopfront photo uploaded | shop=%s path=%s", shop_id, out_path)
+    logger.info("shopfront photo uploaded | shop=%s url=%s", shop_id, photo_url)
     return {
         "shopfrontPhotoUrl": photo_url,
         "photoBrowserLocation": {"lat": browser_gps[0], "lng": browser_gps[1]} if browser_gps else None,
@@ -209,6 +229,44 @@ async def upload_shopfront_photo(
         "photoUploadedAt": now.isoformat(),
         "verificationStatus": "photo_pending",
     }
+
+
+async def _upload_to_imgbb(image_bytes: bytes) -> Optional[str]:
+    """Upload an image to ImgBB and return the public URL.
+
+    ImgBB API: https://api.imgbb.com/1/upload?key=API_KEY
+    Body: multipart form with the image file.
+    Response: { data: { url: "https://...", display_url: "https://..." }, success, status }
+
+    Returns None on failure (caller raises VerificationError).
+    """
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.imgbb.com/1/upload",
+                params={"key": settings.IMGBB_API_KEY},
+                files={"image": ("shopfront.jpg", image_bytes, "image/jpeg")},
+            )
+            if response.status_code != 200:
+                logger.error(
+                    "ImgBB upload failed | status=%s body=%s",
+                    response.status_code, response.text[:200],
+                )
+                return None
+            data = response.json()
+            if not data.get("success"):
+                logger.error("ImgBB returned success=false | %s", data)
+                return None
+            url = (data.get("data") or {}).get("url")
+            if not url:
+                logger.error("ImgBB response missing data.url | %s", data)
+                return None
+            logger.info("ImgBB upload OK | url=%s", url)
+            return url
+    except Exception as exc:
+        logger.error("ImgBB upload exception | %s | %s", exc.__class__.__name__, exc)
+        return None
 
 
 async def admin_approve_shop(shop_id) -> Dict:
