@@ -433,7 +433,7 @@ function ServiceCardTile({
           </div>
           <div className="text-[12px] font-bold text-muted-foreground mt-0.5">
             {shop.categoryLabel}
-            {shop.shopType === "vendor" && " · Thela"}
+            {shop.shopType === "vendor" && " · Vendor"}
           </div>
           <div className="text-[10.5px] font-bold text-muted-foreground mt-0.5">
             {formatDistance(shop.distanceMeters)} door

@@ -12,7 +12,7 @@ type ShopType = "shop" | "vendor" | "service";
 
 const SHOP_TYPES: { key: ShopType; label: string; hindi: string; desc: string; icon: typeof Store }[] = [
   { key: "shop", label: "Dukaan", hindi: "दुकान", desc: "Fixed shop with products — kirana, hardware, medical, etc.", icon: Store },
-  { key: "vendor", label: "Thela", hindi: "ठेला", desc: "Street vendor — mobile cart, fruits, vegetables, snacks.", icon: ShoppingBag },
+  { key: "vendor", label: "Vendor", hindi: "वेंडर", desc: "Street vendor — mobile seller, fruits, vegetables, snacks.", icon: ShoppingBag },
   { key: "service", label: "Professional", hindi: "प्रोफेशनल", desc: "Service provider — plumber, electrician, tailor, repair.", icon: Wrench },
 ];
 
@@ -79,7 +79,7 @@ export default function Onboarding() {
       await utils.invalidate();
       toast.success(
         shopType === "service" ? "Service profile ban gaya! Ab requests aayengi."
-        : shopType === "vendor" ? "Thela ready! Customers ko turant dikhega."
+        : shopType === "vendor" ? "Vendor ready! Customers ko turant dikhega."
         : "Dukaan ban gayi! Ab stock add karo.",
       );
       navigate(shopType === "service" ? "/merchant" : "/merchant/inventory", { replace: true });
@@ -91,7 +91,7 @@ export default function Onboarding() {
   };
 
   const heading = shopType === "service" ? "Apna service details bharo"
-    : shopType === "vendor" ? "Apna thela details bharo"
+    : shopType === "vendor" ? "Apna vendor details bharo"
     : "Apni dukaan ki details bharo";
 
   return (
@@ -102,7 +102,7 @@ export default function Onboarding() {
           {heading}
         </h1>
         <p className="text-[13.5px] font-bold text-brand-ink/70 mt-1.5">
-          Pehle batayen aap kya hain — dukaan, thela, ya professional.
+          Pehle batayen aap kya hain — dukaan, vendor, ya professional.
         </p>
       </div>
 
@@ -132,7 +132,7 @@ export default function Onboarding() {
           <input
             value={newShop.name}
             onChange={(e) => setNewShop({ ...newShop, name: e.target.value })}
-            placeholder={shopType === "service" ? "Naam / service ka naam (e.g. Ramesh Plumber)" : shopType === "vendor" ? "Thela ka naam (e.g. Sharma Fruit Cart)" : "Dukaan ka naam"}
+            placeholder={shopType === "service" ? "Naam / service ka naam (e.g. Ramesh Plumber)" : shopType === "vendor" ? "Vendor ka naam (e.g. Sharma Fruit Cart)" : "Dukaan ka naam"}
             className="w-full rounded-2xl border-2 border-brand-ink/15 bg-background px-4 py-3 font-bold text-[15px] outline-none focus:border-brand-green"
           />
 
@@ -201,7 +201,7 @@ export default function Onboarding() {
 
           <div className="text-[10.5px] font-bold text-brand-ink/45 text-center">
             {shopType === "service" && "Service providers ko bhi phone OTP + verification chahiye — same safety bar as shops."}
-            {shopType === "vendor" && "Thela photo (GPS-tagged) baad mein upload karein — Account page se."}
+            {shopType === "vendor" && "Vendor photo (GPS-tagged) baad mein upload karein — Account page se."}
             {shopType === "shop" && "Shopfront photo (GPS-tagged) baad mein upload karein — Account page se."}
           </div>
 
@@ -210,7 +210,7 @@ export default function Onboarding() {
             onClick={create}
             className="w-full rounded-full border-2 border-brand-ink bg-brand-green text-brand-cream font-display text-[15px] py-3.5 shadow-sticker active:translate-y-[3px] active:shadow-none transition-all disabled:opacity-60"
           >
-            {busy ? "Ban raha hai…" : shopType === "service" ? "Service shuru karo →" : shopType === "vendor" ? "Thela kholo →" : "Dukaan kholo →"}
+            {busy ? "Ban raha hai…" : shopType === "service" ? "Professional shuru karo →" : shopType === "vendor" ? "Vendor kholo →" : "Dukaan kholo →"}
           </button>
         </div>
       </div>
