@@ -177,3 +177,10 @@ def flagged_shops() -> AsyncIOMotorCollection:
 def panic_events() -> AsyncIOMotorCollection:
     """Customer panic button presses — audit trail for safety incidents."""
     return collection("panic_events")
+
+
+def product_images() -> AsyncIOMotorCollection:
+    """Cached Pexels image URLs for product names — 24h TTL cache so we
+    don't re-fetch the same product image every time a shopkeeper adds the
+    same product."""
+    return collection("product_images")

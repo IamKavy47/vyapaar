@@ -46,7 +46,7 @@ from app.schemas.intent import ProductIntent
 from app.services import (
     auth_service, demand_engine, demo_service, inventory_service,
     khata_service, merchant_matching, notification_service, opportunity_service,
-    search_service, trust_service,
+    product_image_service, search_service, trust_service,
 )
 from app.services.auth_service import AuthError, OTPError
 from app.services import chat_service as chat_service_mod
@@ -147,6 +147,8 @@ def inventory_public(doc: dict) -> dict:
         "unit": doc.get("unit", "piece"),
         "inStock": bool(doc.get("in_stock", (quantity or 0) > 0)),
         "brand": doc.get("brand"),
+        "imageUrl": doc.get("image_url"),
+        "imageSource": doc.get("image_source") or "none",
         "createdAt": _iso(doc.get("created_at")),
         "updatedAt": _iso(doc.get("updated_at")),
     }
@@ -757,6 +759,287 @@ async def web_trending():
     return products
 
 
+# ------------------------------------------------------------------ products
+# E-commerce-style Browse page data source. Aggregates inventory items
+# across all VERIFIED shops, joins shop info + distance, and returns a
+# paginated list with product images. If a product has no image (neither
+# manually uploaded nor AI-fetched), the Browse page shows a placeholder.
+
+@router.get("/catalog/products")
+async def web_catalog_products(
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    category: Optional[str] = None,
+    query: Optional[str] = None,
+    sort: str = Query("nearest", regex="^(nearest|cheapest|newest)$"),
+    page: int = Query(1, ge=1, le=100),
+    limit: int = Query(30, ge=1, le=60),
+):
+    """Paginated, geo-sorted product cards for the Browse page.
+
+    Only products from VERIFIED, ACTIVE shops are shown — the same
+    is_verified gate that find_candidates uses. Demo seed shops are
+    excluded by the regex filter (same as catalog/shops).
+    """
+    if category and category != "all":
+        shop_category = normalize_category(category)
+    else:
+        shop_category = None
+
+    # Step 1: gather verified shop ids + distances via $geoNear (or all
+    # verified shops if no lat/lng).
+    shop_match: dict = {
+        "is_active": True,
+        "is_verified": True,
+        "description": {"$not": {"$regex": "demo merchant seeded", "$options": "i"}},
+        "address": {"$not": {"$regex": "^Demo Market", "$options": "i"}},
+    }
+    if shop_category:
+        shop_match["category"] = shop_category
+
+    shops_map: Dict[ObjectId, dict] = {}
+    if lat is not None and lng is not None:
+        pipeline = [
+            {"$geoNear": {
+                "near": {"type": "Point", "coordinates": [lng, lat]},
+                "distanceField": "distance_meters",
+                "maxDistance": settings.SEARCH_RADIUS_MAX_METERS,
+                "spherical": True,
+                "query": shop_match,
+            }},
+        ]
+        async for shop_doc in m.shops().aggregate(pipeline):
+            shops_map[shop_doc["_id"]] = shop_doc
+    else:
+        async for shop_doc in m.shops().find(shop_match).limit(200):
+            shops_map[shop_doc["_id"]] = shop_doc
+
+    if not shops_map:
+        return {"products": [], "page": page, "limit": limit, "total": 0, "hasMore": False}
+
+    # Step 2: gather inventory items from these shops.
+    inv_match: dict = {
+        "shop_id": {"$in": list(shops_map.keys())},
+        "quantity": {"$gt": 0},
+        "in_stock": {"$ne": False},
+    }
+    if query:
+        # Full-text-ish product name search.
+        terms = [t for t in query.strip().lower().split() if len(t) > 1]
+        if terms:
+            inv_match["$or"] = [
+                {"product_key": {"$regex": term, "$options": "i"}}
+                for term in terms
+            ]
+
+    sort_field = "created_at" if sort == "newest" else None
+    cursor = m.inventory_items().find(inv_match)
+    if sort == "newest":
+        cursor = cursor.sort("created_at", -1)
+    elif sort == "cheapest":
+        cursor = cursor.sort("price", 1)
+    # For "nearest" we sort after assembling since we need shop distance.
+
+    items: List[dict] = []
+    async for item in cursor.limit(limit * 4):  # over-fetch then trim
+        shop = shops_map.get(item.get("shop_id"))
+        if not shop:
+            continue
+        coords = from_geojson_point(shop.get("location"))
+        distance = None
+        if lat is not None and lng is not None and coords:
+            distance = round(haversine_meters(lat, lng, coords[0], coords[1]))
+        items.append({
+            "id": _oid(item.get("_id")),
+            "shopId": _oid(item.get("shop_id")),
+            "name": item.get("product", ""),
+            "price": item.get("price"),
+            "unit": item.get("unit", "piece"),
+            "quantity": item.get("quantity", 0),
+            "inStock": bool(item.get("in_stock", (item.get("quantity") or 0) > 0)),
+            "brand": item.get("brand"),
+            "imageUrl": item.get("image_url"),
+            "imageSource": item.get("image_source") or "none",
+            "shop": {
+                "id": _oid(shop.get("_id")),
+                "name": shop.get("shop_name", ""),
+                "categoryKey": FE_CATEGORY.get(shop.get("category"), "other"),
+                "categoryLabel": category_label(shop.get("category")),
+                "address": shop.get("address"),
+                "phone": shop.get("phone"),
+                "lat": coords[0] if coords else None,
+                "lng": coords[1] if coords else None,
+                "isVerified": shop.get("is_verified", False),
+                "shopfrontPhotoUrl": shop.get("shopfront_photo_url"),
+                "distanceMeters": distance,
+            },
+        })
+
+    # Step 3: sort the merged list.
+    if sort == "nearest" and any(p["shop"]["distanceMeters"] is not None for p in items):
+        items.sort(key=lambda p: (
+            p["shop"]["distanceMeters"] is None,
+            p["shop"]["distanceMeters"] or 0,
+        ))
+    elif sort == "cheapest":
+        items.sort(key=lambda p: (
+            p["price"] is None,
+            p["price"] if p["price"] is not None else float("inf"),
+        ))
+
+    total = len(items)
+    start = (page - 1) * limit
+    page_items = items[start:start + limit]
+    return {
+        "products": page_items,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "hasMore": start + limit < total,
+    }
+
+
+@router.get("/catalog/recommendations")
+async def web_catalog_recommendations(
+    user: dict = Depends(require_user),
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    limit: int = Query(10, ge=1, le=20),
+):
+    """AI-powered product recommendations for the Browse page.
+
+    Deterministic scoring (no ML model). Each candidate product is scored by:
+      - +10 if its category matches a category the customer has searched
+        for before (their dominant category in the last 30 requests)
+      - +5  if its category matches the category of a request where this
+        customer picked a shop (their "purchase" history)
+      - +3  if the product is trending (top 30-day by uniqueRequests nearby)
+      - +1  if the product is in stock at a nearby shop
+      - +1  if it's at a shop the customer has previously picked
+
+    Returns the top N products with the same shape as /catalog/products.
+    """
+    from app.models.inventory import product_key as pk_fn
+
+    # Determine customer's dominant category from their last 30 requests.
+    customer_requests = await search_service.recent_requests(user["_id"], limit=30)
+    searched_categories: Dict[str, int] = {}
+    picked_shop_ids: set = set()
+    picked_categories: Dict[str, int] = {}
+    for req in customer_requests:
+        cat = req.get("category") or "other"
+        searched_categories[cat] = searched_categories.get(cat, 0) + 1
+        if req.get("status") == RequestStatus.COMPLETED.value and req.get("selected_match_id"):
+            match = await merchant_matching.get_match(req["selected_match_id"])
+            if match:
+                shop = await m.shops().find_one({"_id": match["merchant_id"]})
+                if shop:
+                    picked_shop_ids.add(str(shop["_id"]))
+                    picked_cat = shop.get("category") or "other"
+                    picked_categories[picked_cat] = picked_categories.get(picked_cat, 0) + 1
+
+    # Step 1: gather nearby verified shops (customer location or none).
+    shop_match: dict = {
+        "is_active": True,
+        "is_verified": True,
+        "description": {"$not": {"$regex": "demo merchant seeded", "$options": "i"}},
+        "address": {"$not": {"$regex": "^Demo Market", "$options": "i"}},
+    }
+    shops_map: Dict[ObjectId, dict] = {}
+    if lat is not None and lng is not None:
+        pipeline = [{"$geoNear": {
+            "near": {"type": "Point", "coordinates": [lng, lat]},
+            "distanceField": "distance_meters",
+            "maxDistance": settings.SEARCH_RADIUS_MAX_METERS,
+            "spherical": True,
+            "query": shop_match,
+        }}]
+        async for shop_doc in m.shops().aggregate(pipeline):
+            shops_map[shop_doc["_id"]] = shop_doc
+    else:
+        async for shop_doc in m.shops().find(shop_match).limit(200):
+            shops_map[shop_doc["_id"]] = shop_doc
+
+    if not shops_map:
+        return {"recommendations": [], "reason": "No verified shops nearby yet."}
+
+    # Step 2: trending products nearby (last 30d unique requests).
+    trending_rows = await demand_engine.top_unique_requested_products(
+        latitude=lat, longitude=lng, radius_meters=settings.OPPORTUNITY_RADIUS_METERS,
+        days=30, limit=30,
+    )
+    trending_keys = {pk_fn(r.get("product") or "") for r in trending_rows}
+
+    # Step 3: gather in-stock inventory + score.
+    items: List[dict] = []
+    async for item in m.inventory_items().find({
+        "shop_id": {"$in": list(shops_map.keys())},
+        "quantity": {"$gt": 0},
+        "in_stock": {"$ne": False},
+    }).limit(500):
+        shop = shops_map.get(item.get("shop_id"))
+        if not shop:
+            continue
+        shop_cat = shop.get("category") or "other"
+        score = 0
+        score += 10 * searched_categories.get(shop_cat, 0)
+        score += 5 * picked_categories.get(shop_cat, 0)
+        if pk_fn(item.get("product") or "") in trending_keys:
+            score += 3
+        score += 1  # in stock nearby
+        if str(shop["_id"]) in picked_shop_ids:
+            score += 1
+        if score == 0:
+            # No signal for this customer — skip it (avoid noise).
+            continue
+        coords = from_geojson_point(shop.get("location"))
+        distance = None
+        if lat is not None and lng is not None and coords:
+            distance = round(haversine_meters(lat, lng, coords[0], coords[1]))
+        items.append({
+            "score": score,
+            "product": {
+                "id": _oid(item.get("_id")),
+                "shopId": _oid(item.get("shop_id")),
+                "name": item.get("product", ""),
+                "price": item.get("price"),
+                "unit": item.get("unit", "piece"),
+                "quantity": item.get("quantity", 0),
+                "inStock": bool(item.get("in_stock", (item.get("quantity") or 0) > 0)),
+                "brand": item.get("brand"),
+                "imageUrl": item.get("image_url"),
+                "imageSource": item.get("image_source") or "none",
+                "shop": {
+                    "id": _oid(shop.get("_id")),
+                    "name": shop.get("shop_name", ""),
+                    "categoryKey": FE_CATEGORY.get(shop_cat, "other"),
+                    "categoryLabel": category_label(shop_cat),
+                    "address": shop.get("address"),
+                    "phone": shop.get("phone"),
+                    "lat": coords[0] if coords else None,
+                    "lng": coords[1] if coords else None,
+                    "isVerified": shop.get("is_verified", False),
+                    "shopfrontPhotoUrl": shop.get("shopfront_photo_url"),
+                    "distanceMeters": distance,
+                },
+            },
+        })
+
+    items.sort(key=lambda r: (-r["score"], r["product"]["shop"].get("distanceMeters") or 0))
+    out = [r["product"] for r in items[:limit]]
+    return {
+        "recommendations": out,
+        "dominantCategory": max(searched_categories, key=searched_categories.get)
+            if searched_categories else None,
+        "pickedShopCount": len(picked_shop_ids),
+        "reason": (
+            f"Based on {sum(searched_categories.values())} of your past searches"
+            + (f" and {len(picked_shop_ids)} shop picks" if picked_shop_ids else "")
+            + " — picked products matching your dominant categories, trending nearby, and in stock."
+        ) if items else "No recommendations yet — search for products to start personalising.",
+    }
+
+
 # ------------------------------------------------------------------ requests
 
 # Keyword hints for the rule-based fallback parser. Used ONLY when every AI
@@ -1078,6 +1361,7 @@ class AddItemBody(BaseModel):
     price: float = Field(gt=0)
     quantity: float = Field(ge=0)
     unit: str = Field(min_length=1, max_length=32)
+    imageUrl: Optional[str] = None  # manual upload URL (already on ImgBB/Disk) — optional
 
 
 class UpdateItemBody(BaseModel):
@@ -1141,10 +1425,29 @@ async def web_merchant_inventory(shop: dict = Depends(require_my_shop)):
 
 @router.post("/merchant/inventory")
 async def web_add_inventory_item(body: AddItemBody, shop: dict = Depends(require_my_verified_shop)):
+    # If the shopkeeper uploaded a photo, use it. Otherwise auto-fetch from
+    # Pexels (AI-powered query expansion via Gemini + Pexels stock photo search)
+    # — the AI-fetch happens synchronously here so the response carries the
+    # image URL and the merchant's inventory list shows it immediately.
+    image_url = body.imageUrl
+    image_source = "manual" if image_url else "none"
+    if not image_url:
+        # Try AI fetch — pass shop category as a hint for query expansion.
+        try:
+            image_url = await product_image_service.fetch_product_image(
+                body.name, category=shop.get("category"),
+            )
+            if image_url:
+                image_source = "ai_fetched"
+        except Exception as exc:
+            logger.warning("product image auto-fetch failed (non-fatal) | %s", exc)
+
     doc = await inventory_service.upsert_item(
         shop_id=shop["_id"], product=body.name, quantity=body.quantity,
         unit=body.unit, price=body.price, source="web",
+        image_url=image_url, image_source=image_source,
     )
+    # Ensure in_stock reflects the new quantity.
     await m.inventory_items().update_one(
         {"shop_id": doc["shop_id"], "product_key": doc["product_key"]},
         {"$set": {"in_stock": body.quantity > 0}},

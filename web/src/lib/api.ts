@@ -139,8 +139,53 @@ export interface InventoryItem {
   unit: string;
   inStock: boolean;
   brand?: string | null;
+  imageUrl?: string | null;
+  imageSource?: "manual" | "ai_fetched" | "none";
   createdAt?: string | null;
   updatedAt?: string | null;
+}
+
+/** Product card as returned by /catalog/products — an inventory item joined
+ * with shop info + distance. Used by the Browse page (grid + map view). */
+export interface ProductCard {
+  id: string;
+  shopId: string;
+  name: string;
+  price?: number | null;
+  unit: string;
+  quantity: number;
+  inStock: boolean;
+  brand?: string | null;
+  imageUrl?: string | null;
+  imageSource?: "manual" | "ai_fetched" | "none";
+  shop: {
+    id: string;
+    name: string;
+    categoryKey: string;
+    categoryLabel: string;
+    address?: string | null;
+    phone?: string | null;
+    lat?: number | null;
+    lng?: number | null;
+    isVerified: boolean;
+    shopfrontPhotoUrl?: string | null;
+    distanceMeters?: number | null;
+  };
+}
+
+export interface ProductsResponse {
+  products: ProductCard[];
+  page: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+}
+
+export interface RecommendationsResponse {
+  recommendations: ProductCard[];
+  dominantCategory?: string | null;
+  pickedShopCount?: number;
+  reason?: string;
 }
 
 export type RequestStatusFE = "matching" | "offers" | "completed" | "no_match";
@@ -481,6 +526,24 @@ export const api = {
     trending: Q<void, TrendingProduct[]>("catalog.trending", () =>
       apiFetch("/catalog/trending"),
     ),
+    products: Q<
+      {
+        lat?: number;
+        lng?: number;
+        category?: string;
+        query?: string;
+        sort?: "nearest" | "cheapest" | "newest";
+        page?: number;
+        limit?: number;
+      },
+      ProductsResponse
+    >("catalog.products", (input) => apiFetch(`/catalog/products${qs(input ?? {})}`)),
+    recommendations: Q<
+      { lat?: number; lng?: number; limit?: number },
+      RecommendationsResponse
+    >("catalog.recommendations", (input) =>
+      apiFetch(`/catalog/recommendations${qs(input ?? {})}`),
+    ),
   },
 
   request: {
@@ -540,7 +603,7 @@ export const api = {
       apiFetch("/merchant/inventory"),
     ),
     addItem: M<
-      { name: string; price: number; quantity: number; unit: string },
+      { name: string; price: number; quantity: number; unit: string; imageUrl?: string },
       { ok: boolean }
     >((body) => apiFetch("/merchant/inventory", { method: "POST", body })),
     updateItem: M<

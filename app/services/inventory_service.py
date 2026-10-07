@@ -18,19 +18,30 @@ logger = get_logger(__name__)
 
 async def upsert_item(*, shop_id, product: str, quantity: float = 0, unit: str = "piece",
                       brand: Optional[str] = None, price: Optional[float] = None,
-                      source: str = "manual", confidence: float = 1.0) -> Dict:
+                      source: str = "manual", confidence: float = 1.0,
+                      image_url: Optional[str] = None,
+                      image_source: str = "none") -> Dict:
     doc = build_inventory_document(
         shop_id=ObjectId(str(shop_id)), product=product, quantity=quantity, unit=unit,
         brand=brand, price=price, source=source, confidence=confidence,
+        image_url=image_url, image_source=image_source,
     )
+    update_set = {
+        "product": doc["product"], "unit": doc["unit"], "brand": doc["brand"],
+        "price": doc["price"], "source": doc["source"],
+        "confidence": doc["confidence"], "updated_at": utcnow(),
+    }
+    # Only set image_url + image_source if a new one is being provided —
+    # so a manual upload doesn't get clobbered by a subsequent AI-fetch
+    # attempt that returns None. The first non-None value wins.
+    if image_url is not None:
+        update_set["image_url"] = image_url
+        update_set["image_source"] = image_source
+    update_set["in_stock"] = doc["in_stock"]
     await m.inventory_items().update_one(
         {"shop_id": doc["shop_id"], "product_key": doc["product_key"]},
         {
-            "$set": {
-                "product": doc["product"], "unit": doc["unit"], "brand": doc["brand"],
-                "price": doc["price"], "source": doc["source"],
-                "confidence": doc["confidence"], "updated_at": utcnow(),
-            },
+            "$set": update_set,
             "$inc": {"quantity": doc["quantity"]},
             "$setOnInsert": {"created_at": doc["created_at"]},
         },

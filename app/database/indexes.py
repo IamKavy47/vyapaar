@@ -105,6 +105,11 @@ async def create_indexes() -> None:
         await m.flagged_shops().create_index([("status", ASCENDING)])
         await m.panic_events().create_index([("customer_id", ASCENDING), ("created_at", DESCENDING)])
 
+        # Product image cache — one image URL per product_key, with a 24h
+        # TTL so stale fetches are re-tried.
+        await m.product_images().create_index([("product_key", ASCENDING)], unique=True)
+        await m.product_images().create_index([("fetched_at", DESCENDING)])
+
         logger.info("MongoDB indexes ensured (including 2dsphere geospatial indexes)")
     except PyMongoError as exc:
         logger.error("Index creation failed: %s", exc)

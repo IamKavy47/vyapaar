@@ -136,6 +136,19 @@ class Settings(BaseSettings):
     # /static/shop_photos/{shop_id}.jpg — works for local dev only).
     IMGBB_API_KEY: str = ""
 
+    # ---------------- Product images (Browse page) ----------------
+    # When a shopkeeper adds a product to their inventory, they can optionally
+    # upload a photo. If they don't, the backend fetches one from Pexels
+    # (free, 200 req/hour, real stock photos). The "AI" flavour is that the
+    # product name is passed through Gemini for query expansion (e.g.
+    # "Teflon Tape" -> "white PTFE plumbing thread seal tape") so the Pexels
+    # search returns more relevant results. PEXELS_API_KEY is required;
+    # GEMINI_API_KEY is optional for the query-expansion step.
+    PEXELS_API_KEY: str = ""
+    # Comma-separated list of categories to append to the Pexels query for
+    # better results — e.g. "Teflon Tape hardware" instead of just "Teflon Tape".
+    PRODUCT_IMAGE_SEARCH_SUFFIX: str = "product india"
+
     # ---------------- Customer safety ----------------
     # Trusted-contact phone is captured during customer onboarding; the panic
     # button SMSes this contact with the customer's location + chosen shop

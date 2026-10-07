@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Package, Trash2 } from "lucide-react";
+import { Plus, Package, Trash2, Camera, Sparkles, ImageIcon } from "lucide-react";
 import { api as trpc } from "@/lib/api";
 import { TopBar } from "@/components/shell";
 import { EmptyState, Sticker } from "@/components/brand";
@@ -11,6 +11,10 @@ export default function Inventory() {
   const items = trpc.merchant.inventory.useQuery();
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ name: "", price: "", quantity: "", unit: "piece" });
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const invalidate = () => utils.merchant.inventory.invalidate();
 
@@ -18,6 +22,8 @@ export default function Inventory() {
     onSuccess: () => {
       toast.success("Item add ho gaya!");
       setForm({ name: "", price: "", quantity: "", unit: "piece" });
+      setImagePreview(null);
+      setUploadedUrl(null);
       setShowAdd(false);
       invalidate();
     },
@@ -31,6 +37,54 @@ export default function Inventory() {
     },
   });
 
+  const onFile = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Sirf image file upload karein");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Photo 5 MB se chhoti honi chahiye");
+      return;
+    }
+    setUploading(true);
+    try {
+      // Preview
+      const reader = new FileReader();
+      reader.onload = () => setImagePreview(reader.result as string);
+      reader.readAsDataURL(file);
+      // Upload to ImgBB (reusing the shopfront-photo endpoint isn't quite
+      // right — that one validates shopfront GPS. For inventory we need a
+      // plain ImgBB upload). For now we POST to ImgBB directly.
+      const imgbbKey = (window as any).__IMGBB_KEY__ as string | undefined;
+      if (!imgbbKey) {
+        // No ImgBB configured — store as data URL for now (works in dev
+        // only, since data URLs are huge and won't be served in prod).
+        // The backend's auto-fetch will kick in if imageUrl is null.
+        toast("Location not set — AI se image laayege automatically");
+        setUploadedUrl(null);
+        return;
+      }
+      const fd = new FormData();
+      fd.append("image", file);
+      const res = await fetch(
+        `https://api.imgbb.com/1/upload?key=${imgbbKey}`,
+        { method: "POST", body: fd },
+      );
+      const data = await res.json();
+      const url = data?.data?.url;
+      if (url) {
+        setUploadedUrl(url);
+        toast.success("Photo upload ho gayi");
+      } else {
+        toast.error("Upload fail ho gaya — AI auto-fetch use karenge");
+      }
+    } catch {
+      toast.error("Upload fail ho gaya — AI auto-fetch use karenge");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const submit = () => {
     const price = Number(form.price);
     const quantity = Number(form.quantity || "0");
@@ -38,7 +92,10 @@ export default function Inventory() {
       toast.error("Naam aur daam toh bharo");
       return;
     }
-    addItem.mutate({ name: form.name.trim(), price, quantity, unit: form.unit.trim() || "piece" });
+    addItem.mutate({
+      name: form.name.trim(), price, quantity, unit: form.unit.trim() || "piece",
+      imageUrl: uploadedUrl ?? undefined,
+    });
   };
 
   const inStockCount = items.data?.filter((i) => i.inStock).length ?? 0;
@@ -91,12 +148,76 @@ export default function Inventory() {
               className="rounded-2xl border-2 border-brand-ink/15 bg-background px-4 py-3 font-extrabold text-[14.5px] outline-none focus:border-brand-green"
             />
           </div>
+
+          {/* Optional product photo */}
+          <div className="rounded-2xl border-2 border-dashed border-brand-ink/15 bg-background p-3">
+            <div className="flex items-center gap-3">
+              <div className="shrink-0">
+                {imagePreview ? (
+                  <img
+                    src={imagePreview}
+                    alt="Product"
+                    className="w-16 h-16 rounded-xl object-cover border-2 border-brand-ink/15"
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => fileRef.current?.click()}
+                    className="w-16 h-16 rounded-xl border-2 border-dashed border-brand-ink/20 grid place-items-center text-[9px] font-extrabold text-brand-ink/40 text-center leading-tight hover:border-brand-green hover:text-brand-green transition-colors"
+                  >
+                    <Camera className="w-5 h-5 mb-0.5" /><br />Photo
+                  </button>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-extrabold text-[12px] flex items-center gap-1">
+                  <ImageIcon className="w-3.5 h-3.5 text-brand-ink/45" />
+                  Product photo (optional)
+                </div>
+                <p className="text-[10.5px] font-bold text-muted-foreground mt-0.5 leading-snug">
+                  Skip karenge to AI (Gemini + Pexels) automatically relevant image la dega.
+                  Upload karoge to woh direct dikhega customers ko.
+                </p>
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => fileRef.current?.click()}
+                    disabled={uploading}
+                    className="text-[10.5px] font-extrabold text-brand-ink/55 hover:text-brand-ink disabled:opacity-50"
+                  >
+                    {imagePreview ? "Change" : "Upload"}
+                  </button>
+                  {imagePreview && !uploadedUrl && (
+                    <span className="text-[10px] font-bold text-muted-foreground">· AI fallback on</span>
+                  )}
+                  {uploadedUrl && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-brand-green/15 text-brand-green px-1.5 py-0.5 text-[9px] font-extrabold uppercase">
+                      <Sparkles className="w-2.5 h-2.5" /> Uploaded
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void onFile(file);
+                e.target.value = "";
+              }}
+            />
+          </div>
+
           <button
             onClick={submit}
             disabled={addItem.isPending}
             className="w-full rounded-full border-2 border-brand-ink bg-brand-green text-brand-cream font-display text-[14.5px] py-3.5 shadow-sticker active:translate-y-[3px] active:shadow-none transition-all disabled:opacity-50"
           >
-            Stock mein daalo →
+            {addItem.isPending ? "Add ho raha hai…" : "Stock mein daalo →"}
           </button>
         </div>
       )}
@@ -141,8 +262,23 @@ export default function Inventory() {
             )}
             style={{ animationDelay: `${Math.min(i, 10) * 0.03}s` }}
           >
+            {/* thumbnail */}
+            <div className="shrink-0 w-12 h-12 rounded-xl overflow-hidden bg-brand-ink/8 grid place-items-center">
+              {it.imageUrl ? (
+                <img src={it.imageUrl} alt={it.name} className="w-full h-full object-cover" loading="lazy" />
+              ) : (
+                <Package className="w-5 h-5 text-brand-ink/30" />
+              )}
+            </div>
             <div className="flex-1 min-w-0">
-              <div className="font-extrabold text-[14.5px] leading-tight truncate">{it.name}</div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-extrabold text-[14.5px] leading-tight truncate">{it.name}</span>
+                {it.imageSource === "ai_fetched" && (
+                  <span className="inline-flex items-center gap-0.5 rounded-full bg-[#7C3AED]/15 text-[#7C3AED] px-1.5 py-0.5 text-[8.5px] font-extrabold uppercase tracking-wide shrink-0">
+                    <Sparkles className="w-2.5 h-2.5" /> AI
+                  </span>
+                )}
+              </div>
               <div className="text-[11.5px] font-bold text-muted-foreground mt-1">
                 {formatINR(it.price)} / {it.unit} · qty {it.quantity}
               </div>
