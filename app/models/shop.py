@@ -3,6 +3,7 @@
 The capability map is the heart of zero-inventory matching: it lets us answer
 "who nearby could plausibly satisfy this need?" without a single product row.
 """
+from enum import Enum
 from typing import Dict, List, Optional
 
 from app.models.user import utcnow
@@ -13,6 +14,39 @@ CATEGORIES: List[str] = [
     "stationery", "mobile_electronics", "repair", "bakery_food", "cosmetics",
     "general_store", "other",
 ]
+
+# Service sub-categories — when shop_type=service, the shopkeeper picks one
+# of these as their service line. They map to existing CATEGORY_CAPABILITIES
+# so the zero-inventory matching still works on capabilities.
+SERVICE_LINES: List[str] = [
+    "plumber", "electrician", "tailor", "carpenter", "painter",
+    "appliance_repair", "mobile_repair", "beautician", "tutor",
+    "delivery", "other_service",
+]
+
+SERVICE_LINE_LABELS: Dict[str, str] = {
+    "plumber": "Plumber", "electrician": "Electrician", "tailor": "Tailor",
+    "carpenter": "Carpenter", "painter": "Painter",
+    "appliance_repair": "Appliance Repair", "mobile_repair": "Mobile Repair",
+    "beautician": "Beautician", "tutor": "Tutor",
+    "delivery": "Delivery", "other_service": "Other Service",
+}
+
+# Category affinity for service lines — a plumber can serve plumbing
+# requests, an electrician can serve electrical requests, etc.
+SERVICE_LINE_AFFINITY: Dict[str, str] = {
+    "plumber": "plumbing",
+    "electrician": "electrical",
+    "tailor": "clothing",
+    "carpenter": "hardware",
+    "painter": "hardware",
+    "appliance_repair": "repair",
+    "mobile_repair": "mobile_electronics",
+    "beautician": "cosmetics",
+    "tutor": "stationery",
+    "delivery": "general_store",
+    "other_service": "other",
+}
 
 CATEGORY_LABELS: Dict[str, str] = {
     "kirana": "Kirana", "hardware": "Hardware", "plumbing": "Plumbing",
@@ -79,16 +113,34 @@ def category_label(value: Optional[str]) -> str:
     return CATEGORY_LABELS.get(normalize_category(value), "Other")
 
 
+class ShopType(str, Enum):
+    SHOP = "shop"          # fixed location with products (kirana, hardware, etc.)
+    VENDOR = "vendor"      # street vendor / thela — mobile or temporary
+    SERVICE = "service"    # service provider (plumber, electrician, tailor, repair)
+
+
 def build_shop_document(
     *, user_id, shop_name: str, phone: str, category: str,
     subcategories: Optional[List[str]] = None, capabilities: Optional[List[str]] = None,
     latitude: Optional[float] = None, longitude: Optional[float] = None,
     address: str = "", description: str = "", telegram_user_id: Optional[int] = None,
     is_verified: bool = False,
+    shop_type: str = ShopType.SHOP.value,
+    service_line: Optional[str] = None,
 ) -> Dict:
     now = utcnow()
     category = normalize_category(category)
     caps = capabilities if capabilities else CATEGORY_CAPABILITIES.get(category, [])
+    # For service providers, also add the service line as a capability so
+    # zero-inventory matching on "plumber" / "electrician" works.
+    if shop_type == ShopType.SERVICE.value and service_line:
+        caps = list(caps) + [service_line]
+        # Also map the service line to its category affinity so category_score
+        # gives full marks when a customer asks for plumbing and this is a
+        # plumber.
+        affinity_cat = SERVICE_LINE_AFFINITY.get(service_line)
+        if affinity_cat and affinity_cat != category:
+            category = affinity_cat
     doc = {
         "user_id": user_id,
         "telegram_user_id": telegram_user_id,
@@ -102,16 +154,19 @@ def build_shop_document(
         "description": description.strip(),
         "is_active": True,
         "is_verified": is_verified,
-        # Shopfront photo verification — the visible trust signal that
-        # customers see before walking to the shop. Empty until the
-        # shopkeeper uploads a geo-tagged photo from inside the PWA AND
-        # an admin approves it (manual step for the hackathon).
+        # shop_type: "shop" (fixed location with products) | "vendor" (street
+        # vendor / thela) | "service" (plumber, electrician, tailor, repair).
+        # The is_verified gate in find_candidates applies to ALL types —
+        # a street vendor still needs phone OTP + a geo-tagged photo of
+        # their thela/cart for the same safety bar as a shop.
+        "shop_type": shop_type,
+        "service_line": service_line if shop_type == ShopType.SERVICE.value else None,
         "shopfront_photo_url": None,
-        "photo_browser_location": None,        # {lat, lng} captured by browser
-        "photo_exif_location": None,           # {lat, lng} parsed from JPEG
+        "photo_browser_location": None,
+        "photo_exif_location": None,
         "photo_uploaded_at": None,
         "photo_approved_at": None,
-        "verification_status": "pending",       # pending | photo_pending | verified | rejected
+        "verification_status": "pending",
         "accepted_count": 0,
         "declined_count": 0,
         "notified_count": 0,

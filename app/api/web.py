@@ -115,12 +115,21 @@ def shop_public(doc: dict, *, lat: Optional[float] = None, lng: Optional[float] 
     if lat is not None and lng is not None and coords:
         distance = round(haversine_meters(lat, lng, coords[0], coords[1]))
     category = doc.get("category", "other")
+    shop_type = doc.get("shop_type") or "shop"
+    service_line = doc.get("service_line")
+    # Display label: for services, prefer the service_line label (e.g.
+    # "Plumber") over the category label (e.g. "Plumbing").
+    from app.models.shop import SERVICE_LINE_LABELS
+    if shop_type == "service" and service_line:
+        display_label = SERVICE_LINE_LABELS.get(service_line, service_line.title())
+    else:
+        display_label = category_label(category)
     return {
         "id": _oid(doc.get("_id")),
         "name": doc.get("shop_name", ""),
         "categoryKey": FE_CATEGORY.get(category, "other"),
         "backendCategory": category,
-        "categoryLabel": category_label(category),
+        "categoryLabel": display_label,
         "subcategories": doc.get("subcategories") or [],
         "capabilities": doc.get("capabilities") or [],
         "address": doc.get("address"),
@@ -130,8 +139,12 @@ def shop_public(doc: dict, *, lat: Optional[float] = None, lng: Optional[float] 
         "isVerified": doc.get("is_verified", False),
         "isActive": doc.get("is_active", True),
         "description": doc.get("description"),
+        "shopType": shop_type,
+        "serviceLine": service_line,
         "distanceMeters": distance,
         "inventoryCount": inventory_count,
+        "shopfrontPhotoUrl": doc.get("shopfront_photo_url"),
+        "verificationStatus": doc.get("verification_status", "pending"),
         "createdAt": _iso(doc.get("created_at")),
     }
 
@@ -433,6 +446,8 @@ class CreateShopBody(BaseModel):
     phone: Optional[str] = None
     lat: float
     lng: float
+    shopType: Optional[str] = Field(default="shop", pattern="^(shop|vendor|service)$")
+    serviceLine: Optional[str] = None  # only when shopType=service
 
 
 class ClaimShopBody(BaseModel):
@@ -569,10 +584,29 @@ async def web_create_shop(body: CreateShopBody, user: dict = Depends(require_use
         longitude=body.lng,
         address=body.address or "",
     )
+    # Now update the shop doc with shop_type + service_line (these aren't
+    # part of ensure_role_profile's signature — a separate update keeps
+    # the existing function's contract stable).
+    shop_update: dict = {}
     if body.phone:
+        shop_update["phone"] = body.phone.strip()
+    if body.shopType:
+        shop_update["shop_type"] = body.shopType
+    if body.serviceLine and body.shopType == "service":
+        shop_update["service_line"] = body.serviceLine
+        # Also add the service line as a capability so zero-inventory
+        # matching finds this service provider when a customer asks for
+        # "plumber" / "electrician" etc.
+        shop = await m.shops().find_one({"user_id": user["_id"]})
+        if shop:
+            caps = set(shop.get("capabilities") or [])
+            caps.add(body.serviceLine)
+            shop_update["capabilities"] = sorted(caps)
+    if shop_update:
+        shop_update["updated_at"] = utcnow()
         await m.shops().update_one(
             {"user_id": user["_id"]},
-            {"$set": {"phone": body.phone.strip(), "updated_at": utcnow()}},
+            {"$set": shop_update},
         )
     return {"ok": True}
 
@@ -897,6 +931,76 @@ async def web_catalog_products(
         "total": total,
         "hasMore": start + limit < total,
     }
+
+
+# ------------------------------------------------------------------ services
+# Service providers (plumbers, electricians, tailors, repair workshops, etc.)
+# are shops with shop_type="service". They don't have inventory — they have
+# capabilities (plumbing, electrical, tailoring) and a service area. The
+# customer's "Services" tab on the Browse page calls this endpoint.
+
+@router.get("/catalog/services")
+async def web_catalog_services(
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    service_line: Optional[str] = None,
+    query: Optional[str] = None,
+    limit: int = Query(30, ge=1, le=60),
+):
+    """List verified service providers near the customer.
+
+    Filters by service_line (e.g. 'plumber', 'electrician') if provided.
+    Sorted by distance if lat/lng is provided.
+    """
+    shop_match: dict = {
+        "is_active": True,
+        "is_verified": True,
+        "shop_type": "service",
+        "description": {"$not": {"$regex": "demo merchant seeded", "$options": "i"}},
+        "address": {"$not": {"$regex": "^Demo Market", "$options": "i"}},
+    }
+    if service_line and service_line != "all":
+        shop_match["service_line"] = service_line
+
+    shops: List[dict] = []
+    if lat is not None and lng is not None:
+        pipeline = [
+            {"$geoNear": {
+                "near": {"type": "Point", "coordinates": [lng, lat]},
+                "distanceField": "distance_meters",
+                "maxDistance": settings.SEARCH_RADIUS_MAX_METERS,
+                "spherical": True,
+                "query": shop_match,
+            }},
+            {"$limit": limit},
+        ]
+        async for shop_doc in m.shops().aggregate(pipeline):
+            shops.append(shop_doc)
+    else:
+        cursor = m.shops().find(shop_match).sort("accepted_count", -1).limit(limit)
+        shops = [doc async for doc in cursor]
+
+    # Optional text query filter (on shop name / service_line / capabilities).
+    if query:
+        q = query.strip().lower()
+        shops = [
+            s for s in shops
+            if q in (s.get("shop_name") or "").lower()
+            or q in (s.get("service_line") or "").lower()
+            or any(q in c.lower() for c in (s.get("capabilities") or []))
+        ]
+
+    return [shop_public(s, lat=lat, lng=lng) for s in shops]
+
+
+@router.get("/catalog/service-lines")
+async def web_catalog_service_lines():
+    """Return the taxonomy of service lines for the customer's filter UI."""
+    from app.models.shop import SERVICE_LINES, SERVICE_LINE_LABELS
+    return [
+        {"key": sl, "label": SERVICE_LINE_LABELS.get(sl, sl.replace("_", " ").title())}
+        for sl in SERVICE_LINES
+    ]
 
 
 @router.get("/catalog/recommendations")

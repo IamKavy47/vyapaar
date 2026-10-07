@@ -121,12 +121,12 @@ export interface Shop {
   isVerified: boolean;
   isActive: boolean;
   description?: string | null;
+  shopType?: "shop" | "vendor" | "service";
+  serviceLine?: string | null;
   distanceMeters?: number | null;
   inventoryCount: number;
   shopfrontPhotoUrl?: string | null;
-  verificationStatus?: "pending" | "photo_pending" | "verified" | "rejected";
-  photoUploadedAt?: string | null;
-  photoApprovedAt?: string | null;
+  verificationStatus?: string;
   createdAt?: string | null;
 }
 
@@ -496,6 +496,8 @@ export const api = {
         phone?: string;
         lat: number;
         lng: number;
+        shopType?: "shop" | "vendor" | "service";
+        serviceLine?: string;
       },
       { ok: boolean }
     >((body) => apiFetch("/profile/create-shop", { method: "POST", body })),
@@ -543,6 +545,15 @@ export const api = {
       RecommendationsResponse
     >("catalog.recommendations", (input) =>
       apiFetch(`/catalog/recommendations${qs(input ?? {})}`),
+    ),
+    services: Q<
+      { lat?: number; lng?: number; serviceLine?: string; query?: string },
+      Shop[]
+    >("catalog.services", (input) =>
+      apiFetch(`/catalog/services${qs(input ?? {})}`),
+    ),
+    serviceLines: Q<void, Array<{ key: string; label: string }>>(
+      "catalog.serviceLines", () => apiFetch("/catalog/service-lines"),
     ),
   },
 
