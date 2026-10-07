@@ -28,6 +28,9 @@ async def get_request(request_id: str):
         "confidence": doc.get("confidence", 0.0), "status": doc.get("status"),
         "input_type": doc.get("input_type", "text"),
         "matched_count": doc.get("matched_count", 0), "created_at": doc.get("created_at"),
+        "accepted_offer_count": doc.get("accepted_offer_count", 0),
+        "offer_window_expires_at": doc.get("offer_window_expires_at"),
+        "selected_offer_id": str(doc["selected_offer_id"]) if doc.get("selected_offer_id") else None,
     })
 
 

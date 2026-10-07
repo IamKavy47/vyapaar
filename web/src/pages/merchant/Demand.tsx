@@ -9,9 +9,9 @@ export default function Demand() {
 
   const products = demand.data?.products ?? [];
   const categories = demand.data?.categories ?? [];
-  const maxReq = Math.max(1, ...products.map((p) => p.requests));
+  const maxReq = Math.max(1, ...products.map((p) => p.unique_customer_requests ?? p.requests));
   const maxCat = Math.max(1, ...categories.map((c) => c.requests));
-  const hot = products.filter((p) => p.unavailable >= 3).slice(0, 3);
+  const hot = products.filter((p) => (p.unavailable_responses ?? p.unavailable) >= 3).slice(0, 3);
 
   return (
     <div>
@@ -77,17 +77,22 @@ export default function Demand() {
                       <div
                         className="h-full rounded-full"
                         style={{
-                          width: `${(p.requests / maxReq) * 100}%`,
+                          width: `${((p.unique_customer_requests ?? p.requests) / maxReq) * 100}%`,
                           background: categoryMeta(p.categoryKey).color,
                         }}
                       />
                     </div>
                   </div>
                   <div className="text-right shrink-0">
-                    <div className="font-display text-[18px]">{p.requests}</div>
+                  <div className="font-display text-[18px]">{p.unique_customer_requests ?? p.requests}</div>
                     <div className="text-[10px] font-extrabold text-muted-foreground uppercase">
-                      {p.unavailable > 0 ? `${p.unavailable} nahi mile` : "sab mile"}
-                    </div>
+                    {(p.unavailable_responses ?? p.unavailable) > 0
+                      ? `${p.unavailable_responses ?? p.unavailable} nahi mile`
+                      : "sab mile"}
+                  </div>
+                  <div className="text-[10px] font-bold text-muted-foreground mt-1">
+                    {(p.merchant_response_attempts ?? 0)} checks
+                  </div>
                   </div>
                 </div>
               </div>

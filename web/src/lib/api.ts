@@ -153,6 +153,9 @@ export interface CustomerRequest {
   inputType: "text" | "voice" | "image" | string;
   rawText?: string | null;
   matchedCount: number;
+  acceptedOfferCount?: number;
+  offerWindowExpiresAt?: string | null;
+  selectedOfferId?: string | null;
   createdAt?: string | null;
 }
 
@@ -160,10 +163,14 @@ export interface Offer {
   id: string;
   requestId: string;
   shopId: string;
-  status: "pending" | "accepted" | "declined" | "expired";
+  status: "pending" | "accepted" | "declined" | "expired" | "selected" | "superseded";
   price?: number | null;
+  priceMissing?: boolean;
   distanceMeters: number;
   matchScore: number;
+  scoreBreakdown?: Record<string, number | string>;
+  reason?: string;
+  responseTimeSeconds?: number | null;
   hasInventoryHint: boolean;
   createdAt?: string | null;
   respondedAt?: string | null;
@@ -174,8 +181,13 @@ export interface Offer {
 export interface TrendingProduct {
   product: string;
   categoryKey: string;
-  requests: number;
-  unavailable: number;
+  requests: number; // compatibility
+  unavailable: number; // compatibility
+  unique_customer_requests?: number;
+  merchant_response_attempts?: number;
+  unavailable_responses?: number;
+  available_responses?: number;
+  unavailable_rate?: number;
 }
 
 export interface CreateRequestResult {

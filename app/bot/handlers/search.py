@@ -114,7 +114,8 @@ async def _run_pipeline(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     await message.reply_text(
         f"📨 {result.notified} nearby shop(s) ko aapki request bhej di hai "
         f"({humanize_distance(result.radius_used_meters)} radius).\n\n"
-        "Jaise hi koi shop confirm karega, aapko turant message milega. ⏳"
+        f"Main {settings.OFFER_WINDOW_SECONDS} second tak offers collect karunga. "
+        "Jaise hi koi shop confirm karega, aapko compare karne ke liye update milega. ⏳"
     )
 
 

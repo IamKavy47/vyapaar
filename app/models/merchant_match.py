@@ -6,11 +6,13 @@ from app.models.user import utcnow
 
 
 class MatchStatus(str, Enum):
-    PENDING = "PENDING"
-    NOTIFIED = "NOTIFIED"
-    ACCEPTED = "ACCEPTED"
-    DECLINED = "DECLINED"
-    EXPIRED = "EXPIRED"
+    PENDING = "pending"
+    NOTIFIED = "notified"
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
+    EXPIRED = "expired"
+    SELECTED = "selected"
+    SUPERSEDED = "superseded"
 
 
 def build_match_document(

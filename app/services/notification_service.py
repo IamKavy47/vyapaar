@@ -154,3 +154,35 @@ def format_customer_match(shop_name: str, distance_text: str, product: str,
     lines += ["", "Please contact the merchant to purchase.",
               "(Shop ne availability confirm ki hai — order abhi place nahi hua hai.)"]
     return "\n".join(lines)
+
+
+def format_customer_offer_arrived(shop_name: str, distance_text: str, product: str,
+                                  price: Optional[float], phone: Optional[str] = None,
+                                  *, accepted_count: int = 1, request_id: Optional[str] = None,
+                                  address: Optional[str] = None,
+                                  latitude: Optional[float] = None,
+                                  longitude: Optional[float] = None) -> str:
+    lines = [
+        "📬 New offer received!",
+        "",
+        f"🔧 {product}",
+        f"🏪 {shop_name} · {distance_text} away",
+    ]
+    if price is not None:
+        lines.append(f"💰 Merchant-confirmed price: ₹{price:g}")
+    else:
+        lines.append("💰 Price not confirmed yet")
+    if phone:
+        lines.append(f"📞 {phone}")
+    if address:
+        lines.append(f"🏠 {address}")
+    if latitude is not None and longitude is not None:
+        lines.append(f"🧭 {navigation_link(latitude, longitude)}")
+    lines += [
+        "",
+        f"✅ Ab tak {accepted_count} offer(s) aaye hain.",
+        "Best option choose karne ke liye offers compare kijiye.",
+    ]
+    if request_id:
+        lines.append(f"Request ID: {request_id}")
+    return "\n".join(lines)

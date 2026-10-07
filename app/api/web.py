@@ -75,11 +75,14 @@ REQUEST_STATUS_FE = {
     RequestStatus.CREATED.value: "matching",
     RequestStatus.PROCESSING.value: "matching",
     RequestStatus.MATCHING.value: "matching",
+    RequestStatus.OFFERS_OPEN.value: "offers",
+    RequestStatus.OFFER_SELECTED.value: "completed",
     RequestStatus.OFFERED.value: "offers",
     RequestStatus.MATCHED.value: "offers",
     RequestStatus.COMPLETED.value: "completed",
     RequestStatus.EXPIRED.value: "no_match",
     RequestStatus.CANCELLED.value: "no_match",
+    RequestStatus.NO_MATCH.value: "no_match",
 }
 
 MATCH_STATUS_FE = {
@@ -88,6 +91,8 @@ MATCH_STATUS_FE = {
     MatchStatus.ACCEPTED.value: "accepted",
     MatchStatus.DECLINED.value: "declined",
     MatchStatus.EXPIRED.value: "expired",
+    MatchStatus.SELECTED.value: "selected",
+    MatchStatus.SUPERSEDED.value: "superseded",
 }
 
 
@@ -160,6 +165,9 @@ def request_public(doc: dict) -> dict:
         "inputType": doc.get("input_type", "text"),
         "rawText": doc.get("raw_text"),
         "matchedCount": doc.get("matched_count", 0),
+        "acceptedOfferCount": doc.get("accepted_offer_count", 0),
+        "offerWindowExpiresAt": _iso(doc.get("offer_window_expires_at")),
+        "selectedOfferId": _oid(doc.get("selected_offer_id")) if doc.get("selected_offer_id") else None,
         "createdAt": _iso(doc.get("created_at")),
     }
 
@@ -174,9 +182,17 @@ def offer_public(match: dict, *, shop: Optional[dict] = None,
         "price": match.get("price"),
         "distanceMeters": round(match.get("distance_meters") or 0),
         "matchScore": match.get("match_score", 0.0),
+        "scoreBreakdown": match.get("score_breakdown", {}),
+        "reason": (match.get("score_breakdown") or {}).get("reason"),
         "hasInventoryHint": has_hint,
         "createdAt": _iso(match.get("created_at")),
         "respondedAt": _iso(match.get("responded_at")),
+        "priceMissing": match.get("price") is None,
+        "responseTimeSeconds": (
+            int((match.get("responded_at") - match.get("created_at")).total_seconds())
+            if match.get("responded_at") and match.get("created_at")
+            else None
+        ),
     }
     if shop is not None:
         out["shop"] = shop_public(shop)
@@ -652,44 +668,7 @@ _FALLBACK_UNITS = ["kg", "g", "litre", "liter", "ml", "dozen", "packet", "pack",
 
 
 def _rule_based_intent(raw_text: str) -> ProductIntent:
-    """Last-resort parser when no AI provider is reachable.
-
-    Takes the customer's words at face value (product = what they typed),
-    guesses category from a keyword table and quantity/unit from the text.
-    Marked provider="rules" so nothing pretends to be AI.
-    """
-    import re
-
-    text = (raw_text or "").strip()
-    lower = text.lower()
-
-    category = "other"
-    for cat, hints in _FALLBACK_CATEGORY_HINTS.items():
-        if any(h in lower for h in hints):
-            category = cat
-            break
-
-    quantity, unit = 1, "piece"
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(" + "|".join(_FALLBACK_UNITS) + r")", lower)
-    if match:
-        quantity = max(1, int(float(match.group(1))))
-        unit = match.group(2)
-    else:
-        bare = re.search(r"\b(\d{1,4})\b", lower)
-        if bare:
-            quantity = max(1, int(bare.group(1)))
-
-    # Strip filler words but keep the customer's own phrasing as the product.
-    filler = {"chahiye", "milda", "milega", "hai", "kya", "please", "pls", "mujhe",
-              "muje", "want", "need", "dijiye", "do", "bro", "yaar"}
-    words = [w for w in re.split(r"\s+", text) if w.lower() not in filler]
-    product = " ".join(words).strip() or text
-
-    return ProductIntent(
-        intent="find_product", product=product[:120], category=category,
-        quantity=quantity, unit=unit, confidence=0.5, provider="rules",
-        description="Parsed by keyword rules because AI providers were unavailable.",
-    )
+    return intent_engine.rule_based_intent(raw_text)
 
 
 class CreateRequestBody(BaseModel):
@@ -770,7 +749,7 @@ async def web_my_requests(user: dict = Depends(require_user)):
 async def _offers_for_request(request_doc: dict) -> List[dict]:
     cursor = m.merchant_matches().find(
         {"request_id": request_doc["request_id"]}
-    ).sort("match_score", -1)
+    ).sort([("status", 1), ("price", 1), ("match_score", -1)])
     offers = []
     keys = [product_key(request_doc.get("product") or "")]
     async for match in cursor:
@@ -805,26 +784,25 @@ async def web_choose_offer(body: ChooseBody, user: dict = Depends(require_user))
     match = await merchant_matching.get_match(body.offerId)
     if not match:
         _error(404, "Offer not found")
-    request_doc = await search_service.get_request(match["request_id"])
-    if not request_doc or str(request_doc.get("customer_id")) != str(user["_id"]):
-        _error(403, "Not your request")
-    if match.get("status") != MatchStatus.ACCEPTED.value:
+    ok, ctx, reason = await search_service.select_offer(
+        request_id=match["request_id"], offer_id=body.offerId, customer_id=user["_id"]
+    )
+    if not ok:
+        if reason == "forbidden":
+            _error(403, "Not your request")
+        if reason == "already_selected":
+            _error(409, "An offer is already selected for this request")
         _error(400, "Shop has not confirmed yet")
+    request_doc = (ctx or {}).get("request") or {}
+    match = (ctx or {}).get("match") or match
+    shop = (ctx or {}).get("shop")
 
+    # Keep compatibility with old clients expecting completed.
     await m.product_requests().update_one(
         {"request_id": request_doc["request_id"]},
         {"$set": {"status": RequestStatus.COMPLETED.value, "updated_at": utcnow()}},
     )
-    await m.merchant_matches().update_many(
-        {
-            "request_id": request_doc["request_id"],
-            "_id": {"$ne": match["_id"]},
-            "status": {"$in": [MatchStatus.PENDING.value, MatchStatus.NOTIFIED.value]},
-        },
-        {"$set": {"status": MatchStatus.EXPIRED.value}},
-    )
 
-    shop = await m.shops().find_one({"_id": match["merchant_id"]})
     if shop and shop.get("telegram_user_id"):
         await notification_service.send_message(
             shop["telegram_user_id"],
@@ -833,6 +811,21 @@ async def web_choose_offer(body: ChooseBody, user: dict = Depends(require_user))
             + (f" — ₹{match['price']:g}" if match.get("price") else "")
             + "\nCustomer dukaan par aa sakta hai. Stock taiyaar rakhiye.",
             kind="customer_chose_you",
+        )
+    if request_doc.get("telegram_user_id"):
+        await notification_service.send_message(
+            request_doc["telegram_user_id"],
+            notification_service.format_customer_match(
+                (shop or {}).get("shop_name", "Shop"),
+                humanize_distance((match or {}).get("distance_meters") or 0),
+                request_doc.get("product") or "Product",
+                (match or {}).get("price"),
+                (shop or {}).get("phone"),
+                address=(shop or {}).get("address"),
+                latitude=(from_geojson_point((shop or {}).get("location")) or (None, None))[0],
+                longitude=(from_geojson_point((shop or {}).get("location")) or (None, None))[1],
+            ),
+            kind="customer_offer_selected",
         )
     return {"ok": True}
 

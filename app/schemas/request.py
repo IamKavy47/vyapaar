@@ -16,6 +16,9 @@ class RequestPublic(BaseModel):
     status: str
     input_type: str
     matched_count: int = 0
+    accepted_offer_count: int = 0
+    offer_window_expires_at: Optional[datetime] = None
+    selected_offer_id: Optional[str] = None
     created_at: Optional[datetime] = None
 
 

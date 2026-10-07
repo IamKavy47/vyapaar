@@ -1,4 +1,5 @@
 """Merchant match / offer schemas."""
+from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -26,8 +27,19 @@ class MatchResult(BaseModel):
 
 
 class OfferPublic(BaseModel):
+    id: Optional[str] = None
+    request_id: Optional[str] = None
+    shop_id: Optional[str] = None
     shop_name: str
     distance_meters: float
     price: Optional[float] = None
+    price_missing: bool = False
+    match_score: Optional[float] = None
+    score_breakdown: dict = Field(default_factory=dict)
+    response_time_seconds: Optional[int] = None
+    accepted_offer_age_seconds: Optional[int] = None
+    reliability: Optional[float] = None
+    inventory_updated_at: Optional[datetime] = None
+    is_verified: bool = False
     status: str
     phone: Optional[str] = None

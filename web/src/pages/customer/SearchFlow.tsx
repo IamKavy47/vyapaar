@@ -10,6 +10,7 @@ import { formatDistance, formatINR, clsx } from "@/lib/format";
 import { categoryMeta } from "@/lib/localmart";
 
 type Phase = "intent" | "matching" | "offers";
+type SortMode = "best" | "nearest" | "lowest_price" | "reliable" | "fastest";
 
 const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -26,6 +27,7 @@ export default function SearchFlow() {
   const [intent, setIntent] = useState<{ product: string; categoryKey: string; confidence: number } | null>(null);
   const [candidates, setCandidates] = useState<any[]>([]);
   const [radiusIdx, setRadiusIdx] = useState(0);
+  const [sortBy, setSortBy] = useState<SortMode>("best");
   const startedRef = useRef(false);
   const RADII = [500, 1000, 2000, 5000];
 
@@ -91,6 +93,23 @@ export default function SearchFlow() {
 
   const offers = detail.data?.offers ?? [];
   const answered = offers.filter((o) => o.status !== "pending");
+  const offerWindowEndsAt = detail.data?.request.offerWindowExpiresAt
+    ? new Date(detail.data.request.offerWindowExpiresAt).getTime()
+    : null;
+  const [nowMs, setNowMs] = useState(Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const sortedOffers = [...offers].sort((a, b) => {
+    if (sortBy === "nearest") return (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0);
+    if (sortBy === "lowest_price") return (a.price ?? Number.MAX_SAFE_INTEGER) - (b.price ?? Number.MAX_SAFE_INTEGER);
+    if (sortBy === "reliable") return ((b.scoreBreakdown?.history as number) ?? 0) - ((a.scoreBreakdown?.history as number) ?? 0);
+    if (sortBy === "fastest") return (a.responseTimeSeconds ?? Number.MAX_SAFE_INTEGER) - (b.responseTimeSeconds ?? Number.MAX_SAFE_INTEGER);
+    return (b.matchScore ?? 0) - (a.matchScore ?? 0);
+  });
 
   // When re-opening an existing request, hydrate intent + candidates from detail
   useEffect(() => {
@@ -221,6 +240,36 @@ export default function SearchFlow() {
               </span>
             )}
           </div>
+          <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-muted-foreground mb-2">
+            <div>
+              {detail.data?.request.acceptedOfferCount ?? answered.filter((o) => o.status === "accepted" || o.status === "selected").length} accepted offer(s)
+            </div>
+            <div>
+              {offerWindowEndsAt && offerWindowEndsAt > nowMs
+                ? `window: ${Math.max(0, Math.floor((offerWindowEndsAt - nowMs) / 1000))}s`
+                : "offer window closed"}
+            </div>
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-2">
+            {[
+              ["best", "Best Match"],
+              ["nearest", "Nearest"],
+              ["lowest_price", "Lowest Price"],
+              ["reliable", "Most Reliable"],
+              ["fastest", "Fastest"],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setSortBy(value as SortMode)}
+                className={clsx(
+                  "rounded-full border-2 px-2.5 py-1 text-[10.5px] font-extrabold whitespace-nowrap",
+                  sortBy === value ? "border-brand-ink bg-brand-ink text-brand-yellow" : "border-brand-ink/20 bg-card",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
           {offers.length === 0 && (
             <div className="rounded-3xl border-2 border-dashed border-brand-ink/20 bg-card p-6">
@@ -229,7 +278,7 @@ export default function SearchFlow() {
           )}
 
           <div className="space-y-3">
-            {offers.map((o) => (
+          {sortedOffers.map((o) => (
               <OfferCard
                 key={o.id}
                 offer={o}
@@ -297,14 +346,15 @@ function OfferCard({
   onOpen: () => void;
 }) {
   const ok = offer.status === "accepted";
-  const no = offer.status === "declined" || offer.status === "expired";
+  const selected = offer.status === "selected";
+  const no = offer.status === "declined" || offer.status === "expired" || offer.status === "superseded";
   const waiting = offer.status === "pending";
   const shop = offer.shop;
   return (
     <div
       className={clsx(
         "lm-pop rounded-[26px] border-2 p-4 relative overflow-hidden transition-all",
-        ok && "border-brand-green bg-[#00914610] shadow-sticker",
+        (ok || selected) && "border-brand-green bg-[#00914610] shadow-sticker",
         waiting && "border-brand-ink/12 bg-card",
         no && "border-brand-ink/10 bg-card opacity-60",
       )}
@@ -318,26 +368,26 @@ function OfferCard({
             <span
               className={clsx(
                 "rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide",
-                ok && "bg-brand-green text-brand-cream",
+                (ok || selected) && "bg-brand-green text-brand-cream",
                 waiting && "bg-brand-yellow text-brand-ink",
                 no && "bg-brand-ink/10 text-brand-ink/50",
               )}
             >
-              {ok ? "Hai!" : waiting ? "soch rahe…" : "Nahi hai"}
+              {selected ? "Selected" : ok ? "Hai!" : waiting ? "soch rahe…" : "Nahi hai"}
             </span>
           </div>
           <div className="text-[12px] font-bold text-muted-foreground mt-1">
             {formatDistance(offer.distanceMeters)} door · {shop.address}
           </div>
         </div>
-        {ok && offer.price != null && (
+        {(ok || selected) && offer.price != null && (
           <div className="text-right shrink-0">
             <div className="font-display text-[24px] leading-none text-brand-ink">{formatINR(offer.price)}</div>
           </div>
         )}
       </div>
 
-      {ok && (
+      {(ok || selected) && (
         <div className="grid grid-cols-3 gap-2 mt-4">
           <a
             href={`https://www.google.com/maps/dir/?api=1&destination=${shop.lat},${shop.lng}`}
@@ -361,10 +411,10 @@ function OfferCard({
           )}
           <button
             onClick={onChoose}
-            disabled={pending}
+            disabled={pending || selected}
             className="rounded-full border-2 border-brand-green bg-brand-green text-brand-cream text-[12px] font-extrabold py-2.5 flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
-            <CircleCheck className="w-3.5 h-3.5" /> Yahi final
+            <CircleCheck className="w-3.5 h-3.5" /> {selected ? "Selected" : "Yahi final"}
           </button>
         </div>
       )}

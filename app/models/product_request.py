@@ -9,14 +9,19 @@ from app.utils.geo import to_geojson_point
 
 
 class RequestStatus(str, Enum):
-    CREATED = "CREATED"
-    PROCESSING = "PROCESSING"
-    MATCHING = "MATCHING"
-    OFFERED = "OFFERED"
-    MATCHED = "MATCHED"
-    COMPLETED = "COMPLETED"  # customer picked a winning shop (web app)
-    EXPIRED = "EXPIRED"
-    CANCELLED = "CANCELLED"
+    CREATED = "created"
+    PROCESSING = "processing"
+    MATCHING = "matching"
+    OFFERS_OPEN = "offers_open"
+    OFFER_SELECTED = "offer_selected"
+    COMPLETED = "completed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+    NO_MATCH = "no_match"
+
+    # Backward-compatible aliases for older stored values/code paths.
+    OFFERED = "offers_open"
+    MATCHED = "offers_open"
 
 
 class InputType(str, Enum):

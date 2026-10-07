@@ -11,6 +11,7 @@ import re
 from typing import Dict, List, Optional, Set
 
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 from app.config.settings import settings
 from app.database import mongo as m
@@ -27,12 +28,31 @@ from app.utils.logging import get_logger
 logger = get_logger(__name__)
 
 _STOPWORDS = {"the", "a", "an", "of", "for", "with", "and", "ka", "ke", "ki", "wala", "chahiye"}
+_TOKEN_RE = re.compile(r"[a-z0-9\u0900-\u097f]+", re.IGNORECASE)
+_CAPABILITY_ALIASES = {
+    "teflon": {"ptfe", "thread", "seal", "sealing", "pipe", "plumber", "white_tape", "safed"},
+    "tape": {"ptfe", "seal", "sealing", "plumber", "thread"},
+    "ptfe": {"teflon", "thread", "seal", "tape"},
+    "नल": {"pipe", "plumbing", "tap"},
+    "पाइप": {"pipe", "plumbing"},
+    "टेप": {"tape", "teflon", "ptfe"},
+    "safed": {"white", "teflon", "ptfe"},
+}
 
 
 def _tokens(text: Optional[str]) -> Set[str]:
     if not text:
         return set()
-    return {t for t in re.split(r"[^a-z0-9]+", text.lower()) if len(t) > 2 and t not in _STOPWORDS}
+    tokens = {m.group(0).strip().lower() for m in _TOKEN_RE.finditer(text)}
+    normalized = set()
+    for token in tokens:
+        if token in _STOPWORDS:
+            continue
+        if len(token) <= 2 and not re.search(r"[\u0900-\u097f]", token):
+            continue
+        normalized.add(token)
+        normalized |= _CAPABILITY_ALIASES.get(token, set())
+    return normalized
 
 
 def need_capabilities(request: Dict) -> Set[str]:
@@ -61,11 +81,11 @@ def capability_score(needed: Set[str], shop: Dict) -> float:
     overlap = shop_caps & needed
     if overlap:
         return min(1.0, 0.45 + 0.2 * len(overlap))
-    # Partial/substring credit: "pipes" vs "pipe", "seal" vs "sealants"
-    for need in needed:
-        for cap in shop_caps:
-            if need in cap or cap in need:
-                return 0.4
+    # Token-prefix credit only for meaningful stems ("pipe" <-> "pipes"), not broad substrings.
+    need_stems = {n.rstrip("s") for n in needed}
+    cap_stems = {c.rstrip("s") for c in shop_caps}
+    if need_stems & cap_stems:
+        return 0.35
     return 0.1
 
 
@@ -99,7 +119,26 @@ def score_merchant(request: Dict, shop: Dict, distance_meters: float,
         "capability": round(cap, 3),
         "distance": round(dist, 3),
         "history": round(hist, 3),
+        "reason": explain_score({
+            "category": round(cat, 3), "capability": round(cap, 3),
+            "distance": round(dist, 3), "history": round(hist, 3),
+        }),
     }
+
+
+def explain_score(breakdown: Dict) -> str:
+    parts = []
+    if breakdown.get("capability", 0) >= 0.45:
+        parts.append("strong capability match")
+    if breakdown.get("category", 0) >= 0.7:
+        parts.append("right category")
+    if breakdown.get("distance", 0) >= 0.6:
+        parts.append("nearby")
+    if breakdown.get("history", 0) >= 0.7:
+        parts.append("reliable responder")
+    if not parts:
+        return "basic nearby category fit"
+    return ", ".join(parts[:3])
 
 
 async def _inventory_hints(shop_ids: List[ObjectId], terms: List[str]) -> Dict[str, Dict]:
@@ -246,8 +285,12 @@ async def persist_matches(request_id: str, candidates: List[MatchCandidate]) -> 
             result = await m.merchant_matches().insert_one(doc)
             doc["_id"] = result.inserted_id
             created.append(doc)
-        except Exception:
+        except DuplicateKeyError:
             logger.debug("duplicate match skipped | %s / %s", request_id, candidate.merchant_id)
+        except Exception:
+            logger.exception("match persistence failed | request=%s merchant=%s",
+                             request_id, candidate.merchant_id)
+            raise
     return created
 
 
@@ -303,20 +346,42 @@ async def get_match(match_id) -> Optional[Dict]:
 
 async def accepted_offers(request_id: str) -> List[Dict]:
     cursor = m.merchant_matches().find(
-        {"request_id": request_id, "status": MatchStatus.ACCEPTED.value}
+        {"request_id": request_id, "status": {"$in": [MatchStatus.ACCEPTED.value, MatchStatus.SELECTED.value]}}
     ).sort("price", 1)
     offers = []
     async for match in cursor:
         shop = await m.shops().find_one({"_id": match["merchant_id"]})
         coordinates = from_geojson_point((shop or {}).get("location"))
+        notified = int((shop or {}).get("notified_count") or 0)
+        accepted = int((shop or {}).get("accepted_count") or 0)
+        reliability = round(accepted / max(1, notified), 2)
         offers.append({
+            "id": str(match.get("_id")),
+            "request_id": match.get("request_id"),
+            "shop_id": str(match.get("merchant_id")),
             "shop_name": (shop or {}).get("shop_name", "Shop"),
             "phone": (shop or {}).get("phone"),
             "address": (shop or {}).get("address"),
+            "is_verified": bool((shop or {}).get("is_verified")),
             "latitude": coordinates[0] if coordinates else None,
             "longitude": coordinates[1] if coordinates else None,
             "distance_meters": match.get("distance_meters"),
             "price": match.get("price"),
+            "price_missing": match.get("price") is None,
+            "match_score": match.get("match_score"),
+            "score_breakdown": match.get("score_breakdown") or {},
             "status": match.get("status"),
+            "response_time_seconds": max(
+                0, int(((match.get("responded_at") or match.get("created_at")) - match.get("created_at")).total_seconds())
+            ) if match.get("created_at") else None,
+            "accepted_offer_age_seconds": max(
+                0, int((utcnow() - (match.get("responded_at") or match.get("created_at"))).total_seconds())
+            ) if (match.get("responded_at") or match.get("created_at")) else None,
+            "inventory_updated_at": (shop or {}).get("updated_at"),
+            "reliability": reliability,
+            "confirmed_recently": bool(
+                match.get("responded_at")
+                and (utcnow() - match.get("responded_at")).total_seconds() <= 600
+            ),
         })
     return offers

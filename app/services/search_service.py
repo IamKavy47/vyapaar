@@ -3,6 +3,7 @@
 Every input type (text, voice, image) funnels through create_request(). Telegram
 handlers contain no business logic; they call into here.
 """
+from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 
 from bson import ObjectId
@@ -18,6 +19,10 @@ from app.utils.geo import from_geojson_point, haversine_meters, humanize_distanc
 from app.utils.logging import get_logger, new_request_id
 
 logger = get_logger(__name__)
+
+
+def offer_window_deadline():
+    return utcnow() + timedelta(seconds=max(10, int(settings.OFFER_WINDOW_SECONDS)))
 
 
 async def create_request(*, intent: ProductIntent, customer_id, telegram_user_id: Optional[int],
@@ -105,8 +110,9 @@ async def create_reservation(*, item: Dict, shop: Dict, customer_id, telegram_us
     await m.product_requests().update_one(
         {"request_id": request["request_id"]},
         {"$set": {
-            "status": RequestStatus.OFFERED.value if sent else RequestStatus.MATCHING.value,
+            "status": RequestStatus.OFFERS_OPEN.value if sent else RequestStatus.MATCHING.value,
             "matched_count": 1, "updated_at": utcnow(),
+            "offer_window_expires_at": offer_window_deadline(),
         }},
     )
     logger.info("reservation created | %s shop=%s item=%s notified=%s",
@@ -132,7 +138,7 @@ async def run_matching(request: Dict, *, notify: bool = True) -> MatchResult:
     candidates = found["candidates"]
 
     if not candidates:
-        await set_status(request["request_id"], RequestStatus.EXPIRED.value)
+        await set_status(request["request_id"], RequestStatus.NO_MATCH.value)
         return MatchResult(
             request_id=request["request_id"], product=request.get("product"),
             radius_used_meters=found["radius_used_meters"], candidates=[], notified=0,
@@ -166,9 +172,11 @@ async def run_matching(request: Dict, *, notify: bool = True) -> MatchResult:
     await m.product_requests().update_one(
         {"request_id": request["request_id"]},
         {"$set": {
-            "status": RequestStatus.OFFERED.value if notified else RequestStatus.MATCHING.value,
+            "status": RequestStatus.OFFERS_OPEN.value if notified else RequestStatus.MATCHING.value,
             "matched_count": len(candidates),
             "radius_used_meters": found["radius_used_meters"],
+            "offer_window_expires_at": offer_window_deadline(),
+            "selected_offer_id": None,
             "updated_at": utcnow(),
         }},
     )
@@ -182,15 +190,29 @@ async def run_matching(request: Dict, *, notify: bool = True) -> MatchResult:
 
 async def handle_merchant_response(match_id, *, accepted: bool,
                                    price: Optional[float] = None) -> Tuple[bool, Optional[Dict]]:
-    """Record YES/NO, write the demand event, and notify the customer on YES."""
+    """Record YES/NO, write demand event, and notify customer on new accepted offer."""
+    existing = await merchant_matching.get_match(match_id)
+    if not existing:
+        return False, None
+    request = await get_request(existing["request_id"])
+    if not request:
+        return False, None
+
+    if request.get("status") in {
+        RequestStatus.OFFER_SELECTED.value, RequestStatus.COMPLETED.value,
+        RequestStatus.CANCELLED.value, RequestStatus.EXPIRED.value, RequestStatus.NO_MATCH.value,
+    }:
+        return False, {"reason": "request_closed", "request": request}
+
+    window_expires_at = request.get("offer_window_expires_at")
+    if window_expires_at and utcnow() > window_expires_at:
+        return False, {"reason": "offer_window_expired", "request": request}
+
     match = await merchant_matching.record_response(match_id, accepted=accepted, price=price)
     if not match:
         return False, None
 
-    request = await get_request(match["request_id"])
     shop = await m.shops().find_one({"_id": match["merchant_id"]})
-    if not request:
-        return True, None
 
     await demand_engine.record_event(
         request=request, merchant_id=match["merchant_id"],
@@ -202,33 +224,100 @@ async def handle_merchant_response(match_id, *, accepted: bool,
     )
 
     if accepted:
-        await set_status(match["request_id"], RequestStatus.MATCHED.value)
+        now = utcnow()
+        accepted_count = await m.merchant_matches().count_documents(
+            {"request_id": match["request_id"], "status": MatchStatus.ACCEPTED.value}
+        )
+        await m.product_requests().update_one(
+            {"request_id": match["request_id"]},
+            {"$set": {
+                "status": RequestStatus.OFFERS_OPEN.value,
+                "accepted_offer_count": accepted_count,
+                "last_offer_at": now,
+                "updated_at": now,
+            }},
+        )
         coordinates = from_geojson_point((shop or {}).get("location"))
         latitude, longitude = coordinates if coordinates else (None, None)
-        text = notification_service.format_customer_match(
+        text = notification_service.format_customer_offer_arrived(
             (shop or {}).get("shop_name", "Shop"),
             humanize_distance(match.get("distance_meters") or 0),
             request.get("product") or "Product",
             price,
-            (shop or {}).get("phone"),
+            phone=(shop or {}).get("phone"),
+            accepted_count=accepted_count,
+            request_id=match["request_id"],
             address=(shop or {}).get("address"),
             latitude=latitude,
             longitude=longitude,
         )
         await notification_service.send_message(
-            request.get("telegram_user_id"), text, kind="customer_match"
+            request.get("telegram_user_id"), text, kind="customer_offer_arrived"
         )
-        # A tappable pin in the chat beats a URL for a first-time smartphone user.
-        if latitude is not None and longitude is not None:
-            await notification_service.send_location(
-                request.get("telegram_user_id"), latitude, longitude,
-                title=(shop or {}).get("shop_name", "Shop"),
-                address=(shop or {}).get("address"),
-            )
     else:
         await merchant_matching.set_cooldown(match["merchant_id"], request.get("product") or "")
 
     return True, {"match": match, "request": request, "shop": shop}
+
+
+async def select_offer(*, request_id: str, offer_id: str, customer_id) -> Tuple[bool, Optional[Dict], str]:
+    """Choose exactly one accepted offer. Idempotent for the same offer."""
+    request = await get_request(request_id)
+    if not request:
+        return False, None, "not_found"
+    if str(request.get("customer_id")) != str(customer_id):
+        return False, None, "forbidden"
+
+    try:
+        offer_oid = ObjectId(str(offer_id))
+    except Exception:
+        return False, None, "not_found"
+
+    selected = await m.merchant_matches().find_one({
+        "_id": offer_oid,
+        "request_id": request_id,
+        "status": {"$in": [MatchStatus.ACCEPTED.value, MatchStatus.SELECTED.value]},
+    })
+    if not selected:
+        return False, None, "offer_not_selectable"
+
+    already_selected = request.get("selected_offer_id")
+    if already_selected:
+        if str(already_selected) == str(offer_oid):
+            shop = await m.shops().find_one({"_id": selected["merchant_id"]})
+            return True, {"match": selected, "request": request, "shop": shop}, "idempotent"
+        return False, None, "already_selected"
+
+    now = utcnow()
+    updated = await m.product_requests().find_one_and_update(
+        {"request_id": request_id, "selected_offer_id": None},
+        {"$set": {
+            "selected_offer_id": offer_oid,
+            "status": RequestStatus.OFFER_SELECTED.value,
+            "selected_at": now,
+            "updated_at": now,
+        }},
+        return_document=True,
+    )
+    if not updated:
+        return False, None, "already_selected"
+
+    await m.merchant_matches().update_one(
+        {"_id": offer_oid},
+        {"$set": {"status": MatchStatus.SELECTED.value}},
+    )
+    await m.merchant_matches().update_many(
+        {
+            "request_id": request_id,
+            "_id": {"$ne": offer_oid},
+            "status": {"$in": [
+                MatchStatus.PENDING.value, MatchStatus.NOTIFIED.value, MatchStatus.ACCEPTED.value,
+            ]},
+        },
+        {"$set": {"status": MatchStatus.SUPERSEDED.value}},
+    )
+    shop = await m.shops().find_one({"_id": selected["merchant_id"]})
+    return True, {"match": selected, "request": updated, "shop": shop}, "selected"
 
 
 async def recent_requests(customer_id, limit: int = 10) -> List[Dict]:
@@ -301,17 +390,35 @@ def format_price_comparison(product: str, offers: List[Dict]) -> str:
 
 
 async def expire_stale_requests() -> int:
-    """Housekeeping: close requests nobody answered."""
-    from datetime import timedelta
+    """Housekeeping: close stale/expired windows and expire pending matches."""
     cutoff = utcnow() - timedelta(minutes=settings.REQUEST_EXPIRY_MINUTES)
     result = await m.product_requests().update_many(
-        {"status": {"$in": [RequestStatus.OFFERED.value, RequestStatus.MATCHING.value]},
+        {"status": {"$in": [RequestStatus.OFFERS_OPEN.value, RequestStatus.MATCHING.value]},
          "created_at": {"$lt": cutoff}},
         {"$set": {"status": RequestStatus.EXPIRED.value, "updated_at": utcnow()}},
+    )
+    expired_windows = await m.product_requests().update_many(
+        {
+            "status": RequestStatus.OFFERS_OPEN.value,
+            "offer_window_expires_at": {"$lt": utcnow()},
+            "selected_offer_id": None,
+        },
+        [
+            {"$set": {
+                "status": {
+                    "$cond": [
+                        {"$gt": [{"$ifNull": ["$accepted_offer_count", 0]}, 0]},
+                        RequestStatus.EXPIRED.value,
+                        RequestStatus.NO_MATCH.value,
+                    ]
+                },
+                "updated_at": utcnow(),
+            }},
+        ],
     )
     await m.merchant_matches().update_many(
         {"status": {"$in": [MatchStatus.PENDING.value, MatchStatus.NOTIFIED.value]},
          "created_at": {"$lt": cutoff}},
         {"$set": {"status": MatchStatus.EXPIRED.value}},
     )
-    return result.modified_count
+    return int(result.modified_count) + int(expired_windows.modified_count)

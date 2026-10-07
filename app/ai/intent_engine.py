@@ -4,6 +4,7 @@ Fallback order comes from .env (gemini -> groq -> gpt_oss). If every provider
 fails we return a low-confidence intent and say so honestly — we never fabricate
 an AI answer.
 """
+import re
 from typing import List, Optional, Tuple
 
 from app.ai.base import LLMProvider, ProviderError
@@ -45,19 +46,77 @@ async def _run_structured(prompt: str, system: str, *, providers: Optional[List[
 
 
 async def extract_intent(text: str, *, input_type: str = "text") -> ProductIntent:
-    """Text/transcript -> ProductIntent. Raises AIUnavailableError if all providers fail."""
+    """Text/transcript -> ProductIntent. Falls back to deterministic local rules."""
     prompt = INTENT_USER_TEMPLATE.format(text=text.strip(), input_type=input_type)
-    data, provider_name = await _run_structured(prompt, INTENT_SYSTEM)
-    intent = ProductIntent(**{k: v for k, v in data.items() if k in ProductIntent.model_fields})
-    intent.provider = provider_name
-    intent.uncertain = (
-        settings.CONFIDENCE_UNCERTAIN <= intent.confidence < settings.CONFIDENCE_DIRECT
+    try:
+        data, provider_name = await _run_structured(prompt, INTENT_SYSTEM)
+        intent = ProductIntent(**{k: v for k, v in data.items() if k in ProductIntent.model_fields})
+        intent.provider = provider_name
+        intent.uncertain = (
+            settings.CONFIDENCE_UNCERTAIN <= intent.confidence < settings.CONFIDENCE_DIRECT
+        )
+        logger.info(
+            "intent extracted | product=%s category=%s confidence=%.2f provider=%s",
+            intent.product, intent.category, intent.confidence, provider_name,
+        )
+        return intent
+    except AIUnavailableError as exc:
+        logger.warning("AI unavailable; using deterministic rules fallback: %s", exc)
+        return rule_based_intent(text)
+
+
+_FALLBACK_CATEGORY_HINTS = {
+    "hardware": {"pipe", "tape", "teflon", "ptfe", "seal", "leak", "plumber", "nul", "नल", "पाइप", "टेप", "सफेद", "plumbing"},
+    "electrical": {"bulb", "led", "wire", "switch", "fan", "battery", "charger", "bijli"},
+    "mobile_electronics": {"mobile", "phone", "earphone", "screen", "sim"},
+    "kirana": {"atta", "rice", "dal", "salt", "oil", "sugar", "maggi", "grocery"},
+    "medical": {"paracetamol", "dawai", "medicine", "tablet", "bandage", "syrup"},
+}
+_FALLBACK_ALIASES = {
+    "teflon tape chahiye": "teflon tape",
+    "pipe leak rokne wala safed tape": "teflon tape",
+    "नल ठीक करने वाला टेप चाहिए": "teflon tape",
+    "पाइप का सफेद टेप": "teflon tape",
+    "plumber wala tape": "teflon tape",
+}
+
+
+def rule_based_intent(raw_text: str) -> ProductIntent:
+    text = (raw_text or "").strip()
+    lower = text.lower()
+    compact = re.sub(r"\s+", " ", lower).strip()
+    normalized_product = _FALLBACK_ALIASES.get(compact)
+    if not normalized_product:
+        for phrase, replacement in _FALLBACK_ALIASES.items():
+            if phrase in compact:
+                normalized_product = replacement
+                break
+
+    category = "other"
+    for cat, hints in _FALLBACK_CATEGORY_HINTS.items():
+        if any(h in compact for h in hints):
+            category = cat
+            break
+
+    quantity, unit = 1, "piece"
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(kg|g|litre|liter|ml|dozen|packet|pack|piece|meter|metre|inch)", compact)
+    if match:
+        quantity = max(1, int(float(match.group(1))))
+        unit = match.group(2)
+
+    product = normalized_product or text
+    confidence = 0.72 if normalized_product else 0.58
+    return ProductIntent(
+        intent="find_product",
+        product=product[:120],
+        category=category,
+        quantity=quantity,
+        unit=unit,
+        confidence=confidence,
+        provider="rules",
+        uncertain=confidence < settings.CONFIDENCE_DIRECT,
+        description="Deterministic fallback parser (no external AI key required).",
     )
-    logger.info(
-        "intent extracted | product=%s category=%s confidence=%.2f provider=%s",
-        intent.product, intent.category, intent.confidence, provider_name,
-    )
-    return intent
 
 
 async def transcribe_voice(audio_bytes: bytes, *, mime_type: str = "audio/ogg",

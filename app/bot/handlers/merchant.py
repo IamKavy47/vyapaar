@@ -175,9 +175,9 @@ async def handle_price_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     product = ((payload or {}).get("request") or {}).get("product") or "Item"
     await update.effective_message.reply_text(
-        f"✅ Dhanyavaad! Customer ko bata diya gaya hai:\n\n"
+        f"✅ Dhanyavaad! Aapka offer customer ko bhej diya gaya hai:\n\n"
         f"🔧 {product}\n💰 ₹{price:g}\n\n"
-        "Customer aapse sampark karega. (Sale abhi confirm nahi hui hai.)",
+        "Customer multiple offers compare karke final shop choose karega. (Sale abhi confirm nahi hui hai.)",
         reply_markup=keyboards.merchant_menu(),
     )
     return True

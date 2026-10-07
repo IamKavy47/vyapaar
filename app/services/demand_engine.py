@@ -47,18 +47,26 @@ async def top_products(*, days: int = 30, limit: int = 10, merchant_id=None,
             "_id": "$product_key",
             "product": {"$first": "$product"},
             "category": {"$first": "$category"},
-            "requests": {"$sum": 1},
-            "unavailable": {"$sum": {"$cond": [{"$eq": ["$response", "unavailable"]}, 1, 0]}},
-            "available": {"$sum": {"$cond": [{"$eq": ["$response", "available"]}, 1, 0]}},
+            "request_ids": {"$addToSet": "$request_id"},
+            "merchant_response_attempts": {"$sum": 1},
+            "unavailable_responses": {"$sum": {"$cond": [{"$eq": ["$response", "unavailable"]}, 1, 0]}},
+            "available_responses": {"$sum": {"$cond": [{"$eq": ["$response", "available"]}, 1, 0]}},
             "last_seen": {"$max": "$created_at"},
         }},
-        {"$sort": {"requests": -1, "unavailable": -1}},
+        {"$addFields": {"unique_customer_requests": {"$size": "$request_ids"}}},
+        {"$sort": {"unique_customer_requests": -1, "merchant_response_attempts": -1}},
         {"$limit": limit},
     ]
     results = []
     async for row in m.demand_events().aggregate(pipeline):
         row["product"] = row.get("product") or row["_id"]
-        row["miss_rate"] = round(row["unavailable"] / max(1, row["requests"]), 2)
+        row["requests"] = row.get("unique_customer_requests", 0)  # backward compatibility for old UI
+        row["unavailable"] = row.get("unavailable_responses", 0)
+        row["available"] = row.get("available_responses", 0)
+        row["unavailable_rate"] = round(
+            row["unavailable_responses"] / max(1, row["merchant_response_attempts"]), 2
+        )
+        row.pop("request_ids", None)
         row.pop("_id", None)
         results.append(row)
     return results
@@ -92,18 +100,26 @@ async def nearby_demand(latitude: float, longitude: float, *, radius_meters: int
         {"$group": {
             "_id": "$product_key",
             "product": {"$first": "$product"},
-            "requests": {"$sum": 1},
-            "unavailable": {"$sum": {"$cond": [{"$eq": ["$response", "unavailable"]}, 1, 0]}},
+            "request_ids": {"$addToSet": "$request_id"},
+            "merchant_response_attempts": {"$sum": 1},
+            "unavailable_responses": {"$sum": {"$cond": [{"$eq": ["$response", "unavailable"]}, 1, 0]}},
+            "available_responses": {"$sum": {"$cond": [{"$eq": ["$response", "available"]}, 1, 0]}},
         }},
-        {"$sort": {"requests": -1}},
+        {"$addFields": {"unique_customer_requests": {"$size": "$request_ids"}}},
+        {"$sort": {"unique_customer_requests": -1, "merchant_response_attempts": -1}},
         {"$limit": limit},
     ]
     out = []
     async for row in m.demand_events().aggregate(pipeline):
         out.append({
             "product": row.get("product") or row["_id"],
-            "requests": row["requests"],
-            "unavailable": row["unavailable"],
+            "unique_customer_requests": row["unique_customer_requests"],
+            "merchant_response_attempts": row["merchant_response_attempts"],
+            "unavailable_responses": row["unavailable_responses"],
+            "available_responses": row["available_responses"],
+            "unavailable_rate": round(
+                row["unavailable_responses"] / max(1, row["merchant_response_attempts"]), 2
+            ),
         })
     return out
 

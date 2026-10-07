@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     MAX_MERCHANTS_PER_REQUEST: int = 8
     MERCHANT_COOLDOWN_HOURS: int = 12
     REQUEST_EXPIRY_MINUTES: int = 30
+    OFFER_WINDOW_SECONDS: int = 90
 
     # A customer's own range preference. Defaults to the 5km auto-expansion
     # ceiling above, but each customer can widen or narrow it — rural users
