@@ -316,3 +316,183 @@ def require_role(user: Optional[Dict], *roles: str) -> Tuple[bool, str]:
     if roles and user.get("role") not in roles:
         return False, "You do not have permission to do that."
     return True, ""
+
+
+# ---------------------------------------------------------------------- OTP
+# Phone number verification via 6-digit OTP. The OTP is hashed at rest
+# (sha256) — the raw code is only ever in the SMS gateway's hands, plus the
+# server console in stub mode for hackathon convenience.
+
+import hashlib
+
+
+def _normalise_phone(phone: str) -> str:
+    """Strip everything except digits and a leading +, so 91 prefixes and
+    spaces / dashes don't fragment the lookup."""
+    cleaned = "".join(c for c in (phone or "") if c.isdigit())
+    if not cleaned:
+        return ""
+    # Indian numbers: assume 91 prefix if 12 digits starting with 91, else 10.
+    if len(cleaned) == 12 and cleaned.startswith("91"):
+        return cleaned
+    if len(cleaned) == 10:
+        return "91" + cleaned
+    return cleaned
+
+
+def _hash_otp(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+def _generate_otp(length: int = 6) -> str:
+    """Cryptographically random numeric OTP of the given length."""
+    alphabet = "0123456789"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+class OTPError(AuthError):
+    """OTP-specific failures — wrong code, expired, no code sent, etc."""
+
+
+async def send_otp(phone: str) -> Dict:
+    """Generate + persist (hashed) + dispatch an OTP to the given phone.
+
+    Returns ``{"sent": True, "dev_otp": "123456"}`` when OTP_STUB_MODE is on
+    — the dev_otp field lets the hackathon UI paste the code from the network
+    response without an SMS gateway. In production, dev_otp is None and the
+    real SMS gateway (MSG91 / Twilio) carries the code.
+    """
+    from datetime import timedelta
+    phone_norm = _normalise_phone(phone)
+    if not phone_norm or len(phone_norm) < 12:
+        raise OTPError("Phone number looks invalid — please enter a 10-digit Indian mobile.")
+
+    # Invalidate any prior unused OTPs for this phone before issuing a new one.
+    await m.otp_codes().update_many(
+        {"phone": phone_norm, "used_at": None},
+        {"$set": {"used_at": utcnow()}},
+    )
+
+    code = _generate_otp(settings.OTP_LENGTH)
+    now = utcnow()
+    expires_at = now + timedelta(minutes=settings.OTP_TTL_MINUTES)
+    doc = {
+        "phone": phone_norm,
+        "code_hash": _hash_otp(code),
+        "created_at": now,
+        "expires_at": expires_at,
+        "used_at": None,
+        "attempts": 0,
+    }
+    await m.otp_codes().insert_one(doc)
+
+    # Dispatch. In stub mode, log + return the raw code so the demo can paste
+    # it from the server console or the network response.
+    if settings.OTP_STUB_MODE or settings.SMS_GATEWAY == "stub":
+        logger.warning("OTP (stub mode) | phone=%s code=%s", phone_norm, code)
+        return {"sent": True, "dev_otp": code, "phone": phone_norm}
+
+    # Production dispatch (placeholder for MSG91 / Twilio).
+    try:
+        await _dispatch_sms(phone_norm, f"{settings.APP_NAME}: your verification code is {code}. It expires in {settings.OTP_TTL_MINUTES} minutes.")
+    except Exception as exc:
+        logger.error("SMS dispatch failed | phone=%s | %s", phone_norm, exc)
+        # Don't leak the code to the UI in production.
+        raise OTPError("Could not send OTP. Please try again in a minute.") from exc
+
+    return {"sent": True, "dev_otp": None, "phone": phone_norm}
+
+
+async def verify_otp(phone: str, code: str) -> Dict:
+    """Verify an OTP against the most recent unused one for the phone.
+
+    On success: marks the OTP used, returns ``{ok: True, phone: ...}``.
+    On failure: increments attempt count, raises OTPError with a user-safe
+    message. After 5 failed attempts the OTP is auto-invalidated.
+    """
+    ok, record = await consume_otp(phone, code)  # raises OTPError on failure
+    # Update the matching user (by phone). If no user has this phone yet,
+    # the caller (registration) will use the OTP check as a pre-registration
+    # gate — the verified_phone is returned for them to attach to the new
+    # account.
+    user = await m.users().find_one({"phone": record["phone"]})
+    if user:
+        await mark_phone_verified(user["_id"])
+        return {"ok": True, "phone": record["phone"], "user_id": str(user["_id"])}
+    return {"ok": True, "phone": record["phone"], "user_id": None}
+
+
+async def consume_otp(phone: str, code: str) -> Tuple[bool, Dict]:
+    """Pure OTP check + consume. Raises OTPError on failure.
+
+    Returns ``(True, record)`` on success. Caller can use ``record['phone']``
+    for downstream account creation. Does NOT touch the user table —
+    ``mark_phone_verified`` does that separately.
+    """
+    phone_norm = _normalise_phone(phone)
+    if not phone_norm:
+        raise OTPError("Phone number is missing.")
+    code = (code or "").strip()
+    if not code or not code.isdigit() or len(code) != settings.OTP_LENGTH:
+        raise OTPError(f"Code must be {settings.OTP_LENGTH} digits.")
+
+    now = utcnow()
+    record = await m.otp_codes().find_one({
+        "phone": phone_norm,
+        "used_at": None,
+        "expires_at": {"$gt": now},
+    }, sort=[("created_at", -1)])
+
+    if not record:
+        raise OTPError("No active OTP for this number — please request a new one.")
+
+    if record.get("attempts", 0) >= 5:
+        await m.otp_codes().update_one(
+            {"_id": record["_id"]}, {"$set": {"used_at": now}},
+        )
+        raise OTPError("Too many wrong attempts — please request a new code.")
+
+    if _hash_otp(code) != record["code_hash"]:
+        await m.otp_codes().update_one(
+            {"_id": record["_id"]}, {"$inc": {"attempts": 1}},
+        )
+        raise OTPError("Wrong code. Please check and try again.")
+
+    await m.otp_codes().update_one(
+        {"_id": record["_id"]}, {"$set": {"used_at": now}},
+    )
+    return True, record
+
+
+async def mark_phone_verified(user_id) -> None:
+    """Flip ``phone_verified`` to True for a user (used by both the
+    standalone verify-otp endpoint and the registration flow)."""
+    now = utcnow()
+    await m.users().update_one(
+        {"_id": user_id},
+        {"$set": {
+            "phone_verified": True,
+            "phone_verified_at": now,
+            "updated_at": now,
+        }},
+    )
+
+
+async def is_phone_verified(user_id) -> bool:
+    user = await get_user_by_id(user_id)
+    return bool(user and user.get("phone_verified"))
+
+
+async def _dispatch_sms(phone: str, text: str) -> None:
+    """Production SMS dispatch — placeholder for MSG91 / Twilio."""
+    if settings.SMS_GATEWAY == "msg91":
+        # TODO: wire MSG91 transactional SMS API.
+        # https://api.msg91.com/apidoc/textsms/sendv5
+        logger.warning("MSG91 SMS gateway not yet wired — message dropped | to=%s", phone)
+        return
+    if settings.SMS_GATEWAY == "twilio":
+        # TODO: wire Twilio Programmable SMS.
+        logger.warning("Twilio SMS gateway not yet wired — message dropped | to=%s", phone)
+        return
+    # Default: no-op (stub mode handled by the caller).
+    return

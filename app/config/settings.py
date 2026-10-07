@@ -104,6 +104,40 @@ class Settings(BaseSettings):
     # bucket so individual customer locations are never exposed to merchants.
     HEATMAP_BUCKET_METERS: int = 300
 
+    # ---------------- Phone verification (anti-scam / anti-impersonation) ----------------
+    # OTP is mandatory for both customers and shopkeepers before any action.
+    # In stub mode the OTP is logged to stdout AND returned in the API response
+    # so a hackathon demo can paste it from the server console — no SMS gateway
+    # signup needed. Flip to false in production and wire MSG91 / Twilio below.
+    OTP_STUB_MODE: bool = True
+    OTP_TTL_MINUTES: int = 5
+    OTP_LENGTH: int = 6
+    # 6-digit numeric OTP, hashed at rest (sha256) like auth tokens.
+    # Real SMS gateway stub — plug in MSG91 / Twilio here in production.
+    SMS_GATEWAY: str = "stub"  # "stub" | "msg91" | "twilio"
+    MSG91_AUTH_KEY: str = ""
+    MSG91_SENDER_ID: str = "VYAPAR"
+    MSG91_ROUTE: str = "4"  # transactional
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_FROM_NUMBER: str = ""
+
+    # ---------------- Shopfront photo verification ----------------
+    # Shopkeeper takes a photo of their shop exterior from inside the PWA;
+    # the browser captures GPS at the same moment, AND the JPEG's EXIF GPS
+    # is parsed server-side as a cross-check. Both must be within this many
+    # metres of the registered shop location, or the upload is rejected.
+    SHOPFRONT_PHOTO_DISTANCE_METERS: int = 200
+    SHOPFRONT_PHOTO_MAX_BYTES: int = 5 * 1024 * 1024  # 5 MB
+    SHOPFRONT_PHOTO_DIR: str = ""  # empty -> app/static/shop_photos/
+
+    # ---------------- Customer safety ----------------
+    # Trusted-contact phone is captured during customer onboarding; the panic
+    # button SMSes this contact with the customer's location + chosen shop
+    # details. For the hackathon SMS is stubbed (logged), so no SMS gateway
+    # cost is incurred.
+    PANIC_SMS_STUB: bool = True
+
     # A customer's own range preference. Defaults to the 5km auto-expansion
     # ceiling above, but each customer can widen or narrow it — rural users
     # often need more than 5km, dense markets often want less noise.
@@ -203,6 +237,13 @@ class Settings(BaseSettings):
     @property
     def email_enabled(self) -> bool:
         return bool(self.SMTP_HOST and self.SMTP_FROM_EMAIL)
+
+    @property
+    def shopfront_photo_dir(self):
+        from pathlib import Path
+        if self.SHOPFRONT_PHOTO_DIR:
+            return Path(self.SHOPFRONT_PHOTO_DIR)
+        return Path(__file__).resolve().parent.parent / "static" / "shop_photos"
 
 
 @lru_cache

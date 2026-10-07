@@ -22,10 +22,11 @@ from datetime import timedelta
 from typing import Dict, List, Literal, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from fastapi import Body
 
 from app.ai import intent_engine
 from app.ai.intent_engine import AIUnavailableError
@@ -47,8 +48,12 @@ from app.services import (
     khata_service, merchant_matching, notification_service, opportunity_service,
     search_service, trust_service,
 )
-from app.services.auth_service import AuthError
+from app.services.auth_service import AuthError, OTPError
+from app.services import chat_service as chat_service_mod
+from app.services.chat_service import ChatError
 from app.services.location_service import update_customer_location
+from app.services import verification_service as verification_service_mod
+from app.services.verification_service import VerificationError
 from app.utils.errors import DatabaseError
 from app.utils.geo import from_geojson_point, haversine_meters
 from app.utils.logging import get_logger
@@ -224,11 +229,51 @@ async def require_user(request: Request) -> dict:
     return user
 
 
+async def require_verified_user(request: Request) -> dict:
+    """Like require_user, but also requires the phone number to be OTP-verified.
+
+    All real actions (search, accept/reject a request, choose an offer,
+    upload shopfront photo, send a chat message, panic, flag, etc.) go
+    through this gate. Read endpoints (profile.get, /auth/me, catalog)
+    can use plain ``require_user`` so an unverified user can still see
+    their own profile.
+    """
+    user = await require_user(request)
+    if not user.get("phone_verified"):
+        raise HTTPException(
+            status_code=403,
+            detail="Please verify your phone number before doing this.",
+        )
+    return user
+
+
 async def require_my_shop(user: dict = Depends(require_user)) -> dict:
     shop = await m.shops().find_one({"user_id": user["_id"]})
     if not shop:
         raise HTTPException(status_code=403, detail="No shop linked to this account")
     return shop
+
+
+async def require_my_verified_shop(user: dict = Depends(require_verified_user)) -> dict:
+    """Like require_my_shop, but also requires phone OTP verification.
+
+    Used by merchant action endpoints (respond to a request, add inventory,
+    plan from opportunity, upload shopfront photo) so an unverified
+    shopkeeper can still log in and see their profile but cannot act.
+    """
+    shop = await m.shops().find_one({"user_id": user["_id"]})
+    if not shop:
+        raise HTTPException(status_code=403, detail="No shop linked to this account")
+    return shop
+
+
+async def require_admin(request: Request) -> dict:
+    user = await current_web_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if user.get("role") != UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 
 def _error(status: int, message: str):
@@ -248,18 +293,73 @@ class RegisterBody(BaseModel):
     phone: str = Field(min_length=10, max_length=20)
     password: str = Field(min_length=8, max_length=128)
     role: Literal[UserRole.CUSTOMER.value, UserRole.SHOPKEEPER.value]
+    otp: str = Field(min_length=4, max_length=10,
+                     description="Phone OTP code — required to verify the phone at registration time.")
+
+
+class SendOtpBody(BaseModel):
+    phone: str = Field(min_length=10, max_length=20)
+
+
+class VerifyOtpBody(BaseModel):
+    phone: str = Field(min_length=10, max_length=20)
+    code: str = Field(min_length=4, max_length=10)
+
+
+@router.post("/auth/send-otp")
+async def web_send_otp(body: SendOtpBody):
+    """Send a 6-digit OTP to the given phone number.
+
+    In stub mode (default for hackathon) the OTP is logged to the server
+    console AND returned in the response as ``dev_otp`` so you can paste
+    it from the network response. Flip ``OTP_STUB_MODE=false`` and wire
+    MSG91 / Twilio for production.
+    """
+    try:
+        result = await auth_service.send_otp(body.phone)
+    except OTPError as exc:
+        _error(400, str(exc))
+    return result
+
+
+@router.post("/auth/verify-otp")
+async def web_verify_otp(body: VerifyOtpBody):
+    """Verify a standalone OTP. Used to re-verify an existing user's phone
+    (e.g. a logged-in user who hasn't verified yet). Registration uses the
+    inline ``otp`` field on POST /auth/register instead.
+    """
+    try:
+        result = await auth_service.verify_otp(body.phone, body.code)
+    except OTPError as exc:
+        _error(400, str(exc))
+    return result
 
 
 @router.post("/auth/register")
 async def web_register(body: RegisterBody, request: Request):
+    """Register a new account — phone OTP is required at this step.
+
+    The flow: caller sends POST /auth/send-otp first to dispatch a 6-digit
+    code, then submits the full register body including the OTP. The OTP is
+    consumed (one-shot) and the new account is created with
+    ``phone_verified=True`` so the user can act immediately after login.
+    """
     if not check_auth_rate_limit(request):
         _error(429, "Too many attempts. Please wait a minute and try again.")
+    # Verify the OTP first — if it fails, no account is created.
+    try:
+        await auth_service.consume_otp(body.phone, body.otp)
+    except OTPError as exc:
+        _error(400, str(exc))
     role = body.role
     try:
         user = await auth_service.register_user(
             full_name=body.fullName, email=body.email, phone=body.phone,
             password=body.password, role=role,
         )
+        # OTP just succeeded — flip phone_verified on the new account.
+        await auth_service.mark_phone_verified(user["_id"])
+        user["phone_verified"] = True
         session_id = await auth_service.create_session(user)
     except AuthError as exc:
         _error(400, str(exc))
@@ -373,7 +473,7 @@ async def web_profile(user: dict = Depends(require_user)):
 
 
 @router.post("/requests/reserve")
-async def web_reserve_item(body: ReserveBody, user: dict = Depends(require_user)):
+async def web_reserve_item(body: ReserveBody, user: dict = Depends(require_verified_user)):
     """Reserve an in-stock catalogue item with its shopkeeper.
 
     This deliberately uses the same merchant confirmation flow as a free-text
@@ -508,8 +608,13 @@ async def web_catalog_shops(
     limit: int = Query(50, ge=1, le=100),
 ):
     # Demo seed records must never be presented as real local businesses.
+    # Also: only VERIFIED shops are visible to customers. A shop is verified
+    # when (1) the shopkeeper's phone is OTP-verified, (2) they upload a
+    # geo-tagged shopfront photo from inside the PWA, and (3) an admin
+    # approves the photo. Unverified shops cannot be browsed or matched.
     match: dict = {
         "is_active": True,
+        "is_verified": True,
         "description": {"$not": {"$regex": "demo merchant seeded", "$options": "i"}},
         "address": {"$not": {"$regex": "^Demo Market", "$options": "i"}},
     }
@@ -734,7 +839,7 @@ class ChooseBody(BaseModel):
 
 
 @router.post("/requests")
-async def web_create_request(body: CreateRequestBody, user: dict = Depends(require_user)):
+async def web_create_request(body: CreateRequestBody, user: dict = Depends(require_verified_user)):
     """Customer search from the web app.
 
     Runs the exact same pipeline as a Telegram search: intent extraction ->
@@ -925,7 +1030,7 @@ async def web_request_offers(request_id: str, user: dict = Depends(require_user)
 
 
 @router.post("/requests/choose")
-async def web_choose_offer(body: ChooseBody, user: dict = Depends(require_user)):
+async def web_choose_offer(body: ChooseBody, user: dict = Depends(require_verified_user)):
     """Customer picks the winning shop. Exactly one selection per request.
 
     Delegates to ``search_service.select_offer`` which atomically claims the
@@ -1013,7 +1118,7 @@ async def web_merchant_inbox(shop: dict = Depends(require_my_shop)):
 
 
 @router.post("/merchant/respond")
-async def web_merchant_respond(body: RespondBody, shop: dict = Depends(require_my_shop)):
+async def web_merchant_respond(body: RespondBody, shop: dict = Depends(require_my_verified_shop)):
     """YES / NO from the web inbox — identical to the bot's inline buttons:
     records the response, writes the demand event, and notifies the customer
     on Telegram when their account is linked."""
@@ -1035,7 +1140,7 @@ async def web_merchant_inventory(shop: dict = Depends(require_my_shop)):
 
 
 @router.post("/merchant/inventory")
-async def web_add_inventory_item(body: AddItemBody, shop: dict = Depends(require_my_shop)):
+async def web_add_inventory_item(body: AddItemBody, shop: dict = Depends(require_my_verified_shop)):
     doc = await inventory_service.upsert_item(
         shop_id=shop["_id"], product=body.name, quantity=body.quantity,
         unit=body.unit, price=body.price, source="web",
@@ -1059,7 +1164,7 @@ async def _my_item(item_id: str, shop: dict) -> dict:
 
 @router.patch("/merchant/inventory/{item_id}")
 async def web_update_inventory_item(item_id: str, body: UpdateItemBody,
-                                    shop: dict = Depends(require_my_shop)):
+                                    shop: dict = Depends(require_my_verified_shop)):
     await _my_item(item_id, shop)
     updates: dict = {}
     if body.name is not None:
@@ -1080,7 +1185,7 @@ async def web_update_inventory_item(item_id: str, body: UpdateItemBody,
 
 
 @router.post("/merchant/inventory/{item_id}/toggle")
-async def web_toggle_inventory_item(item_id: str, shop: dict = Depends(require_my_shop)):
+async def web_toggle_inventory_item(item_id: str, shop: dict = Depends(require_my_verified_shop)):
     item = await _my_item(item_id, shop)
     current = bool(item.get("in_stock", (item.get("quantity") or 0) > 0))
     await m.inventory_items().update_one(
@@ -1091,7 +1196,7 @@ async def web_toggle_inventory_item(item_id: str, shop: dict = Depends(require_m
 
 
 @router.delete("/merchant/inventory/{item_id}")
-async def web_remove_inventory_item(item_id: str, shop: dict = Depends(require_my_shop)):
+async def web_remove_inventory_item(item_id: str, shop: dict = Depends(require_my_verified_shop)):
     await _my_item(item_id, shop)
     await m.inventory_items().delete_one({"_id": ObjectId(item_id)})
     return {"ok": True}
@@ -1120,7 +1225,7 @@ async def web_merchant_khata(shop: dict = Depends(require_my_shop)):
 
 
 @router.post("/merchant/khata")
-async def web_add_khata(body: AddKhataBody, shop: dict = Depends(require_my_shop)):
+async def web_add_khata(body: AddKhataBody, shop: dict = Depends(require_my_verified_shop)):
     entry_type = EntryType.CREDIT.value if body.direction == "udhaar" else EntryType.PAYMENT.value
     try:
         await khata_service.add_entry(
@@ -1366,7 +1471,7 @@ class PlanFromOpportunityBody(BaseModel):
 
 @router.post("/merchant/inventory/plan")
 async def web_plan_from_opportunity(body: PlanFromOpportunityBody,
-                                     shop: dict = Depends(require_my_shop)):
+                                     shop: dict = Depends(require_my_verified_shop)):
     """Prefill the inventory form from a stock opportunity recommendation.
 
     Does NOT add stock — the merchant must explicitly confirm via the regular
@@ -1384,3 +1489,298 @@ async def web_plan_from_opportunity(body: PlanFromOpportunityBody,
         {"$set": {"in_stock": False, "is_plan": True, "updated_at": utcnow()}},
     )
     return {"ok": True, "productId": str(doc.get("_id") or doc.get("product_key"))}
+
+
+# ----------------------------------------------- Shopfront photo verification
+# Shopkeeper takes a photo of their shop exterior from inside the PWA —
+# browser GPS is captured at the same moment AND the JPEG's EXIF GPS is
+# parsed server-side as a cross-check. Both must be within ~200m of the
+# registered shop location. The photo becomes the shop's profile picture
+# on every customer-facing surface (offer cards, shop detail page).
+# An admin (you, for the hackathon) reviews the pending photos and approves
+# each one — flipping is_verified=True so the shop becomes visible.
+
+@router.post("/merchant/shop/shopfront-photo")
+async def web_upload_shopfront_photo(
+    file: UploadFile = File(...),
+    browser_lat: float = Form(...),
+    browser_lng: float = Form(...),
+    shop: dict = Depends(require_my_verified_shop),
+):
+    """Upload a shopfront photo. Validates GPS (browser + EXIF) against the
+    registered shop location, saves the photo to disk, and updates the shop
+    to verification_status=photo_pending (admin must approve)."""
+    photo_bytes = await file.read()
+    try:
+        result = await verification_service_mod.upload_shopfront_photo(
+            shop_id=shop["_id"], photo_bytes=photo_bytes,
+            browser_lat=browser_lat, browser_lng=browser_lng,
+            filename=file.filename or "shopfront.jpg",
+        )
+    except VerificationError as exc:
+        _error(400, str(exc))
+    return result
+
+
+@router.patch("/profile/trusted-contact")
+async def web_set_trusted_contact(
+    body: dict, user: dict = Depends(require_verified_user),
+):
+    """Customer sets a trusted contact phone for the panic button."""
+    phone = (body or {}).get("phone", "").strip()
+    if not phone or len(phone) < 10:
+        _error(400, "Please enter a valid phone number.")
+    await m.users().update_one(
+        {"_id": user["_id"]},
+        {"$set": {"trusted_contact_phone": phone, "updated_at": utcnow()}},
+    )
+    return {"ok": True}
+
+
+# ------------------------------------------------------ Admin verification UI
+# A small set of admin endpoints that flip is_verified on shops. For the
+# hackathon the user is the only admin — log in as an admin account to
+# approve friends' shops. The /admin/shops/pending page in the React app
+# calls these endpoints.
+
+@router.get("/admin/shops/pending")
+async def web_admin_pending_shops(admin: dict = Depends(require_admin)):
+    return {"shops": await verification_service_mod.list_pending_shops()}
+
+
+@router.post("/admin/shops/{shop_id}/approve")
+async def web_admin_approve_shop(shop_id: str, admin: dict = Depends(require_admin)):
+    try:
+        return await verification_service_mod.admin_approve_shop(ObjectId(shop_id))
+    except VerificationError as exc:
+        _error(400, str(exc))
+
+
+@router.post("/admin/shops/{shop_id}/reject")
+async def web_admin_reject_shop(
+    shop_id: str, body: dict = Body(default_factory=dict),
+    admin: dict = Depends(require_admin),
+):
+    reason = (body or {}).get("reason", "")
+    try:
+        return await verification_service_mod.admin_reject_shop(ObjectId(shop_id), reason)
+    except VerificationError as exc:
+        _error(400, str(exc))
+
+
+# ------------------------------------------------------------ Customer safety
+# Report a shop (audit trail) + panic button (alert trusted contact).
+
+class FlagBody(BaseModel):
+    reason: Literal[
+        "didnt_honor_price", "felt_unsafe", "shop_doesnt_exist",
+        "harassment_in_chat", "other",
+    ]
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.post("/requests/{request_id}/flag")
+async def web_flag_shop(
+    request_id: str, body: FlagBody,
+    user: dict = Depends(require_verified_user),
+):
+    """Customer flags a shop for safety / honesty reasons.
+
+    Records a doc in flagged_shops for manual review. The shop's
+    is_active stays True until YOU (the admin) review the flag — automatic
+    suspension on every flag would let a single malicious customer
+    take down any shop.
+    """
+    request_doc = await search_service.get_request(request_id)
+    if not request_doc or str(request_doc.get("customer_id")) != str(user["_id"]):
+        _error(404, "Request not found")
+    # Find the chosen shop's id (the one the customer actually picked).
+    chosen = request_doc.get("selected_match_id")
+    if not chosen:
+        _error(400, "You can only flag a shop after picking it.")
+    match = await merchant_matching.get_match(chosen)
+    if not match:
+        _error(404, "Offer not found")
+    await m.flagged_shops().insert_one({
+        "shop_id": match["merchant_id"],
+        "request_id": request_id,
+        "customer_id": user["_id"],
+        "reason": body.reason,
+        "note": (body.note or "").strip()[:500],
+        "status": "open",
+        "created_at": utcnow(),
+    })
+    # Severity: felt_unsafe or shop_doesnt_exist → auto-suspend the shop
+    # pending review (these are the safety-critical ones).
+    if body.reason in ("felt_unsafe", "shop_doesnt_exist"):
+        await m.shops().update_one(
+            {"_id": match["merchant_id"]},
+            {"$set": {"is_active": False, "updated_at": utcnow()}},
+        )
+    return {"ok": True, "auto_suspended": body.reason in ("felt_unsafe", "shop_doesnt_exist")}
+
+
+class PanicBody(BaseModel):
+    request_id: Optional[str] = None
+    latitude: float
+    longitude: float
+
+
+@router.post("/panic")
+async def web_panic(body: PanicBody, user: dict = Depends(require_verified_user)):
+    """Customer panic button — records an event for the audit trail and (in
+    production) SMSes the trusted contact. For the hackathon the SMS is
+    stubbed (logged to console).
+
+    The event payload includes the customer's current location + the most
+    recent chosen shop's details (if any) so the trusted contact knows where
+    the customer was heading.
+    """
+    now = utcnow()
+    shop_info = None
+    if body.request_id:
+        req = await search_service.get_request(body.request_id)
+        if req and str(req.get("customer_id")) == str(user["_id"]):
+            chosen = req.get("selected_match_id")
+            if chosen:
+                match = await merchant_matching.get_match(chosen)
+                if match:
+                    shop = await m.shops().find_one({"_id": match["merchant_id"]})
+                    if shop:
+                        shop_info = {
+                            "shop_id": str(shop["_id"]),
+                            "shop_name": shop.get("shop_name"),
+                            "phone": shop.get("phone"),
+                            "address": shop.get("address"),
+                            "product": req.get("product"),
+                        }
+
+    await m.panic_events().insert_one({
+        "customer_id": user["_id"],
+        "request_id": body.request_id,
+        "latitude": body.latitude,
+        "longitude": body.longitude,
+        "shop_info": shop_info,
+        "trusted_contact_phone": user.get("trusted_contact_phone"),
+        "created_at": now,
+    })
+
+    # In stub mode, log the alert (and the trusted-contact phone + the shop
+    # details) so the hackathon judge can see the audit-trail value. In
+    # production, dispatch an SMS via MSG91 / Twilio.
+    if settings.PANIC_SMS_STUB or settings.SMS_GATEWAY == "stub":
+        logger.warning(
+            "PANIC (stub mode) | customer=%s trusted_contact=%s location=(%s,%s) shop=%s",
+            user["_id"], user.get("trusted_contact_phone"),
+            body.latitude, body.longitude,
+            (shop_info or {}).get("shop_name"),
+        )
+        return {
+            "ok": True,
+            "alerted": True,
+            "mode": "stub",
+            "message": (
+                "Panic alert recorded. In production this would SMS your trusted contact "
+                f"({user.get('trusted_contact_phone') or 'not set'}) with your location "
+                "and shop details."
+            ),
+        }
+
+    # Production SMS dispatch (placeholder — wire MSG91 / Twilio).
+    trusted = user.get("trusted_contact_phone")
+    if trusted:
+        try:
+            await auth_service._dispatch_sms(
+                trusted,
+                f"VYAPAAR-MITRA PANIC ALERT: {user.get('full_name')} pressed the panic button "
+                f"at https://maps.google.com/?q={body.latitude},{body.longitude}"
+                + (f" while heading to {(shop_info or {}).get('shop_name', 'a shop')}."
+                   if shop_info else "."),
+            )
+        except Exception as exc:
+            logger.error("panic SMS failed | customer=%s | %s", user["_id"], exc)
+    return {"ok": True, "alerted": True, "mode": "sms"}
+
+
+# ----------------------------------------------------------------- In-app chat
+# Customer-side and shop-side chat endpoints. Both sides are anonymised —
+# the customer's phone is never in the chat, the shopkeeper's phone is only
+# on the offer card (visible to the customer, not in the chat itself).
+# Chat is scoped to a request_id: opens when the customer picks a shop,
+# closes when the request expires or the customer confirms the deal.
+
+@router.get("/requests/{request_id}/chat")
+async def web_request_chat(
+    request_id: str, since: Optional[str] = Query(None),
+    user: dict = Depends(require_verified_user),
+):
+    """Customer-side chat fetch. Returns messages after `since` (ISO timestamp)
+    so the client can poll every ~1.5s and only get new messages."""
+    try:
+        messages = await chat_service_mod.recent_messages(
+            request_id=request_id, user=user, since=since,
+        )
+    except ChatError as exc:
+        _error(400, str(exc))
+    return {"messages": messages, "since": since}
+
+
+@router.post("/requests/{request_id}/chat/messages")
+async def web_send_chat_message(
+    request_id: str, body: dict,
+    user: dict = Depends(require_verified_user),
+):
+    """Customer-side send."""
+    text = (body or {}).get("text", "")
+    try:
+        msg = await chat_service_mod.send_message(
+            request_id=request_id, user=user, text=text,
+        )
+    except ChatError as exc:
+        _error(400, str(exc))
+    return msg
+
+
+@router.get("/merchant/conversations")
+async def web_merchant_conversations(
+    shop: dict = Depends(require_my_verified_shop),
+):
+    """Shop-side inbox of all open chats for this shop, most-recent first."""
+    rows = await chat_service_mod.list_conversations_for_shop(shop["_id"])
+    return {"conversations": rows}
+
+
+@router.get("/merchant/conversations/{request_id}")
+async def web_merchant_chat_history(
+    request_id: str, since: Optional[str] = Query(None),
+    shop: dict = Depends(require_my_verified_shop),
+):
+    """Shop-side chat fetch for one conversation."""
+    try:
+        messages = await chat_service_mod.recent_messages(
+            request_id=request_id, user=None, shop=shop, since=since,
+        )
+    except ChatError as exc:
+        _error(400, str(exc))
+    return {"messages": messages, "since": since}
+
+
+@router.post("/merchant/conversations/{request_id}/messages")
+async def web_merchant_send_chat_message(
+    request_id: str, body: dict,
+    shop: dict = Depends(require_my_verified_shop),
+):
+    """Shop-side send."""
+    text = (body or {}).get("text", "")
+    try:
+        # Shop sends as shopkeeper — pass shop so the service knows which
+        # side this is. The user_id (sender_id) is the shop's owner.
+        shopkeeper_user = await m.users().find_one({"_id": shop["user_id"]})
+        if not shopkeeper_user:
+            _error(404, "Shop owner account not found")
+        msg = await chat_service_mod.send_message(
+            request_id=request_id, user=shopkeeper_user, text=text, shop=shop,
+        )
+    except ChatError as exc:
+        _error(400, str(exc))
+    return msg

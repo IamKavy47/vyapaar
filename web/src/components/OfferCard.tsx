@@ -1,9 +1,10 @@
 import { useState } from "react";
 import {
   Phone, Navigation, BadgeCheck, CircleCheck, Clock, Gauge, Info, Sparkles, FlaskConical,
+  MessageCircle, Flag, X,
 } from "lucide-react";
 import { clsx, formatDistance, formatINR, formatScore, formatSeconds } from "@/lib/format";
-import type { Offer } from "@/lib/api";
+import type { Offer, FlagReason } from "@/lib/api";
 import { CategoryIcon } from "@/components/brand";
 
 export type OfferSortKey =
@@ -74,6 +75,8 @@ interface OfferCardProps {
   showChoose?: boolean;
   onChoose?: () => void;
   onOpen?: () => void;
+  onChat?: () => void;
+  onFlag?: (reason: FlagReason) => void;
 }
 
 /**
@@ -85,11 +88,16 @@ interface OfferCardProps {
  *
  * Demo-simulated offers are clearly labelled so customers / judges never
  * confuse them with real merchant activity.
+ *
+ * Shopfront photo (when present) replaces the abstract CategoryIcon as the
+ * shop's visual identity — the strongest trust signal that a real shop
+ * exists at the registered location.
  */
 export function OfferCard({
-  offer, isPending, isSelected, showChoose = true, onChoose, onOpen,
+  offer, isPending, isSelected, showChoose = true, onChoose, onOpen, onChat, onFlag,
 }: OfferCardProps) {
   const [showWhy, setShowWhy] = useState(false);
+  const [showFlagMenu, setShowFlagMenu] = useState(false);
   const ok = offer.status === "accepted";
   const no = offer.status === "declined" || offer.status === "expired";
   const waiting = offer.status === "pending";
@@ -118,7 +126,17 @@ export function OfferCard({
       )}
 
       <div className="flex items-start gap-3.5">
-        <CategoryIcon categoryKey={shop.categoryKey} size={46} />
+        {/* Shopfront photo — replaces CategoryIcon when available.
+            This is the strongest visible trust signal. */}
+        {shop.shopfrontPhotoUrl ? (
+          <img
+            src={shop.shopfrontPhotoUrl}
+            alt={shop.name}
+            className="w-[46px] h-[46px] rounded-2xl border-2 border-brand-ink/15 object-cover shrink-0"
+          />
+        ) : (
+          <CategoryIcon categoryKey={shop.categoryKey} size={46} />
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="font-extrabold text-[15.5px] truncate">{shop.name}</span>
@@ -219,19 +237,28 @@ export function OfferCard({
 
       {/* Action row — only when accepted and not yet picked */}
       {ok && !isSelected && showChoose && (
-        <div className="grid grid-cols-3 gap-2 mt-4">
+        <div className="grid grid-cols-4 gap-1.5 mt-4">
+          {onChat && (
+            <button
+              type="button"
+              onClick={onChat}
+              className="rounded-full border-2 border-brand-ink bg-card text-[10.5px] font-extrabold py-2.5 flex items-center justify-center gap-1"
+            >
+              <MessageCircle className="w-3.5 h-3.5" /> Chat
+            </button>
+          )}
           <a
             href={`https://www.google.com/maps/dir/?api=1&destination=${shop.lat},${shop.lng}`}
             target="_blank"
             rel="noreferrer"
-            className="rounded-full border-2 border-brand-ink bg-brand-ink text-brand-yellow text-[12px] font-extrabold py-2.5 flex items-center justify-center gap-1.5"
+            className="rounded-full border-2 border-brand-ink bg-brand-ink text-brand-yellow text-[10.5px] font-extrabold py-2.5 flex items-center justify-center gap-1"
           >
             <Navigation className="w-3.5 h-3.5" /> Route
           </a>
           {shop.phone ? (
             <a
               href={`tel:${shop.phone}`}
-              className="rounded-full border-2 border-brand-ink bg-card text-[12px] font-extrabold py-2.5 flex items-center justify-center gap-1.5"
+              className="rounded-full border-2 border-brand-ink bg-card text-[10.5px] font-extrabold py-2.5 flex items-center justify-center gap-1"
             >
               <Phone className="w-3.5 h-3.5" /> Call
             </a>
@@ -239,7 +266,7 @@ export function OfferCard({
             <button
               type="button"
               onClick={onOpen}
-              className="rounded-full border-2 border-brand-ink bg-card text-[12px] font-extrabold py-2.5"
+              className="rounded-full border-2 border-brand-ink bg-card text-[10.5px] font-extrabold py-2.5"
             >
               Dukaan
             </button>
@@ -248,10 +275,57 @@ export function OfferCard({
             type="button"
             onClick={onChoose}
             disabled={isPending}
-            className="rounded-full border-2 border-brand-green bg-brand-green text-brand-cream text-[12px] font-extrabold py-2.5 flex items-center justify-center gap-1.5 disabled:opacity-50"
+            className="rounded-full border-2 border-brand-green bg-brand-green text-brand-cream text-[10.5px] font-extrabold py-2.5 flex items-center justify-center gap-1 disabled:opacity-50"
           >
-            <CircleCheck className="w-3.5 h-3.5" /> Yahi final
+            <CircleCheck className="w-3.5 h-3.5" /> Final
           </button>
+        </div>
+      )}
+
+      {/* Report button — small, bottom-right, only for declined/expired or
+          after a customer has picked (so they can flag the chosen shop). */}
+      {(isSelected || no) && onFlag && (
+        <div className="mt-3 flex justify-end">
+          {showFlagMenu ? (
+            <div className="rounded-2xl border-2 border-[#F03749]/30 bg-card p-2 w-full">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10.5px] font-extrabold uppercase tracking-wide text-[#F03749]">
+                  <Flag className="w-3.5 h-3.5 inline mr-1" />
+                  Report this shop
+                </span>
+                <button onClick={() => setShowFlagMenu(false)} className="text-brand-ink/50">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-1">
+                {([
+                  ["didnt_honor_price", "Didn't honor the price"],
+                  ["felt_unsafe", "Felt unsafe"],
+                  ["shop_doesnt_exist", "Shop doesn't exist"],
+                  ["harassment_in_chat", "Harassment in chat"],
+                  ["other", "Other"],
+                ] as const).map(([reason, label]) => (
+                  <button
+                    key={reason}
+                    onClick={() => {
+                      onFlag(reason);
+                      setShowFlagMenu(false);
+                    }}
+                    className="text-left rounded-xl bg-background px-2.5 py-1.5 text-[11.5px] font-bold hover:bg-[#F037490d]"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowFlagMenu(true)}
+              className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wide text-brand-ink/40 hover:text-[#F03749]"
+            >
+              <Flag className="w-3 h-3" /> Report
+            </button>
+          )}
         </div>
       )}
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { ShoppingBasket, Mic, Zap, MapPin, Eye, EyeOff, Store, ShoppingBag } from "lucide-react";
+import { ShoppingBasket, Mic, Zap, MapPin, Eye, EyeOff, Store, ShoppingBag, Phone, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
 import { api, ApiError } from "@/lib/api";
@@ -26,14 +26,40 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [otp, setOtp] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const login = api.auth.login.useMutation();
   const register = api.auth.register.useMutation();
+  const sendOtp = api.auth.sendOtp.useMutation({
+    onSuccess: (data) => {
+      setOtpSent(true);
+      if (data.dev_otp) {
+        // Stub mode (hackathon convenience) — paste the OTP from the network response.
+        toast(`OTP sent (stub mode): ${data.dev_otp}`, { duration: 8000 });
+      } else {
+        toast.success("OTP SMS bhej diya. Code dakhil karein.");
+      }
+    },
+    onError: (e) => toast.error(e instanceof ApiError ? e.message : "OTP bhej nahi paaye."),
+  });
 
   useEffect(() => {
     if (!isLoading && isAuthenticated) navigate("/", { replace: true });
   }, [isLoading, isAuthenticated, navigate]);
+
+  const sendOtpNow = async () => {
+    if (phone.trim().length < 10) {
+      toast.error("Pehle valid phone number likho");
+      return;
+    }
+    try {
+      await sendOtp.mutateAsync({ phone: phone.trim() });
+    } catch {
+      /* onError handles the toast */
+    }
+  };
 
   const submit = async () => {
     if (busy) return;
@@ -53,6 +79,10 @@ export default function Login() {
       toast.error("Password kam se kam 8 characters ka ho");
       return;
     }
+    if (mode === "register" && otp.trim().length < 4) {
+      toast.error("OTP code dakhil karein (Send OTP button se code milega).");
+      return;
+    }
     setBusy(true);
     try {
       if (mode === "login") {
@@ -64,10 +94,11 @@ export default function Login() {
           phone: phone.trim(),
           password,
           role,
+          otp: otp.trim(),
         });
       }
       await refresh();
-      toast.success(mode === "login" ? "Namaste! Wapas aa gaye." : "Account ban gaya!");
+      toast.success(mode === "login" ? "Namaste! Wapas aa gaye." : "Account ban gaya! Phone verified ✓");
       navigate("/", { replace: true });
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Kuch gadbad ho gayi — phir try karo.");
@@ -121,7 +152,7 @@ export default function Login() {
             {(["login", "register"] as const).map((m) => (
               <button
                 key={m}
-                onClick={() => setMode(m)}
+                onClick={() => { setMode(m); setOtpSent(false); setOtp(""); }}
                 className={clsx(
                   "rounded-full py-2 text-[12.5px] font-extrabold uppercase tracking-wide transition-all",
                   mode === m ? "bg-brand-ink text-brand-yellow" : "text-brand-ink/60",
@@ -142,14 +173,25 @@ export default function Login() {
                   autoComplete="name"
                   className="w-full rounded-2xl border-2 border-brand-ink/15 bg-background px-4 py-3 font-bold text-[15px] outline-none focus:border-brand-green"
                 />
-                <input
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="Phone number"
-                  autoComplete="tel"
-                  inputMode="tel"
-                  className="w-full rounded-2xl border-2 border-brand-ink/15 bg-background px-4 py-3 font-bold text-[15px] outline-none focus:border-brand-green"
-                />
+                <div className="flex gap-2">
+                  <input
+                    value={phone}
+                    onChange={(e) => { setPhone(e.target.value); setOtpSent(false); }}
+                    placeholder="Phone number"
+                    autoComplete="tel"
+                    inputMode="tel"
+                    className="min-w-0 flex-1 rounded-2xl border-2 border-brand-ink/15 bg-background px-4 py-3 font-bold text-[15px] outline-none focus:border-brand-green"
+                  />
+                  <button
+                    type="button"
+                    onClick={sendOtpNow}
+                    disabled={sendOtp.isPending || phone.trim().length < 10}
+                    className="shrink-0 rounded-2xl border-2 border-brand-ink bg-brand-ink text-brand-yellow px-3 text-[11.5px] font-extrabold inline-flex items-center gap-1 disabled:opacity-50"
+                  >
+                    <Phone className="w-3.5 h-3.5" />
+                    {otpSent ? "Resend" : "Send OTP"}
+                  </button>
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                   {([
                     ["customer", "Customer", ShoppingBag],
@@ -170,6 +212,21 @@ export default function Login() {
                     </button>
                   ))}
                 </div>
+                {otpSent && (
+                  <div className="rounded-2xl border-2 border-brand-green/40 bg-brand-green/5 p-2.5 flex items-center gap-2 lm-pop">
+                    <ShieldCheck className="w-5 h-5 text-brand-green shrink-0" />
+                    <input
+                      value={otp}
+                      onChange={(e) => setOtp(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && submit()}
+                      placeholder="6-digit OTP"
+                      inputMode="numeric"
+                      maxLength={8}
+                      autoComplete="one-time-code"
+                      className="min-w-0 flex-1 bg-transparent font-bold text-[16px] tracking-[0.4em] outline-none"
+                    />
+                  </div>
+                )}
               </>
             )}
             <input
@@ -213,6 +270,11 @@ export default function Login() {
             <br />
             <span className="text-brand-green">Account → Connect Telegram</span> dabaiye.
           </p>
+          {mode === "register" && (
+            <p className="mt-2 text-center text-[10.5px] font-bold text-brand-ink/40 leading-relaxed">
+              Phone OTP verifies you're real — scammers ke liye SIM khareedna padta hai.
+            </p>
+          )}
         </div>
       </div>
 

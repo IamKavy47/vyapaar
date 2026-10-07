@@ -16,19 +16,26 @@ import Inventory from "@/pages/merchant/Inventory";
 import Khata from "@/pages/merchant/Khata";
 import Demand from "@/pages/merchant/Demand";
 import Impact from "@/pages/merchant/Impact";
+import AdminPendingShops from "@/pages/admin/PendingShops";
 import Login from "@/pages/Login";
 import Onboarding from "@/pages/Onboarding";
 import NotFound from "@/pages/NotFound";
 
 export function useRole() {
-  return useOutletContext<{ role: "customer" | "shopkeeper" }>();
+  return useOutletContext<{ role: "customer" | "shopkeeper" | "admin" }>();
 }
 
 function RoleHome() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
   const profile = trpc.profile.get.useQuery(undefined, { enabled: isAuthenticated });
   if (profile.data?.appRole === "shopkeeper") {
     return <Navigate to={profile.data.shop ? "/merchant" : "/onboarding"} replace />;
+  }
+  // Admins have appRole=None (the profile endpoint only returns 'customer' or
+  // 'shopkeeper'); the only way to detect an admin is via the user's role.
+  const userRole = (user?.role ?? "customer") as string;
+  if (userRole === "admin") {
+    return <Navigate to="/admin/shops/pending" replace />;
   }
   return <Home />;
 }
@@ -52,6 +59,7 @@ export default function App() {
           <Route path="/merchant/khata" element={<Khata />} />
           <Route path="/merchant/demand" element={<Demand />} />
           <Route path="/merchant/impact" element={<Impact />} />
+          <Route path="/admin/shops/pending" element={<AdminPendingShops />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Routes>

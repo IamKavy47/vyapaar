@@ -153,3 +153,27 @@ def notifications() -> AsyncIOMotorCollection:
 
 def merchant_cooldowns() -> AsyncIOMotorCollection:
     return collection("merchant_cooldowns")
+
+
+def otp_codes() -> AsyncIOMotorCollection:
+    """Hashed OTP codes — sha256(code) at rest, single-use, TTL'd."""
+    return collection("otp_codes")
+
+
+def chats() -> AsyncIOMotorCollection:
+    """In-app customer ↔ shopkeeper chat, scoped per request_id."""
+    return collection("chats")
+
+
+def chat_messages() -> AsyncIOMotorCollection:
+    return collection("chat_messages")
+
+
+def flagged_shops() -> AsyncIOMotorCollection:
+    """Customer reports of unsafe / dishonest shops — manual review queue."""
+    return collection("flagged_shops")
+
+
+def panic_events() -> AsyncIOMotorCollection:
+    """Customer panic button presses — audit trail for safety incidents."""
+    return collection("panic_events")

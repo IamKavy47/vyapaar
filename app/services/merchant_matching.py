@@ -170,6 +170,11 @@ async def find_candidates(request: Dict, *, limit: Optional[int] = None) -> Dict
                     "spherical": True,
                     "query": {
                         "is_active": True,
+                        # Safety gate: only VERIFIED shops are matched to
+                        # customers. Verification = phone OTP + shopfront
+                        # photo + admin approval. Without this gate, a
+                        # scammer could register with just an email + password.
+                        "is_verified": True,
                         "description": {
                             "$not": {"$regex": "demo merchant seeded", "$options": "i"}
                         },

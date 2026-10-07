@@ -99,11 +99,35 @@ async def seed_customer() -> None:
         password_hash=hash_password(DEMO_PASSWORD), role=UserRole.CUSTOMER.value,
         is_verified=True,
     )
+    # Pre-verify the demo customer's phone so the hackathon demo doesn't
+    # require an actual OTP SMS round-trip for the seeded account. Real
+    # customer accounts created via /api/v1/auth/register still go through
+    # the OTP flow.
+    user["phone_verified"] = True
+    user["phone_verified_at"] = user["created_at"]
     result = await m.users().insert_one(user)
     await m.customers().insert_one(build_customer_document(
         user_id=result.inserted_id, latitude=CENTER_LAT, longitude=CENTER_LNG
     ))
     print(f"👤 Demo customer seeded ({email} / {DEMO_PASSWORD})")
+
+
+async def seed_admin() -> None:
+    """The hackathon demo needs an admin account to approve pending shop
+    photos (the manual verification step). This account is the "verifier"."""
+    email = "admin@vyapaar-mitra.local"
+    if await m.users().find_one({"email": email}):
+        print("• Admin already exists")
+        return
+    user = build_user_document(
+        full_name="Vyapaar Admin", email=email, phone="9999900000",
+        password_hash=hash_password(DEMO_PASSWORD), role=UserRole.ADMIN.value,
+        is_verified=True,
+    )
+    user["phone_verified"] = True
+    user["phone_verified_at"] = user["created_at"]
+    await m.users().insert_one(user)
+    print(f"🛡️  Admin seeded ({email} / {DEMO_PASSWORD}) — use this to approve pending shop photos")
 
 
 async def seed_shops() -> None:
@@ -117,6 +141,11 @@ async def seed_shops() -> None:
             password_hash=hash_password(DEMO_PASSWORD), role=UserRole.SHOPKEEPER.value,
             is_verified=True,
         )
+        # Pre-verify phone for seeded shopkeeper accounts (no OTP needed
+        # at demo time for these pre-seeded accounts). Real shopkeeper
+        # accounts created via /api/v1/auth/register still go through OTP.
+        user["phone_verified"] = True
+        user["phone_verified_at"] = user["created_at"]
         user_result = await m.users().insert_one(user)
         latitude, longitude = offset(CENTER_LAT, CENTER_LNG, north, east)
         shop = build_shop_document(
@@ -156,11 +185,15 @@ async def main() -> None:
 
     await seed_shops()
     await seed_customer()
+    await seed_admin()
 
     print("\n📌 Note: shopkeeper accounts are NOT linked to Telegram yet.")
     print("   For the live demo, open the bot, choose 🏪 Shopkeeper, press 🔐 Login / Register")
     print(f"   and log in with e.g. shop1@vyapaar-mitra.local / {DEMO_PASSWORD}")
     print("   Then share the shop's location from Telegram so it can receive requests.")
+    print("\n🛡️  Admin account (verifier):")
+    print(f"   admin@vyapaar-mitra.local / {DEMO_PASSWORD}")
+    print("   Log in as admin on the web app to approve pending shopfront photos at /admin/shops/pending")
     await close_mongo_connection()
 
 

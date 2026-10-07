@@ -34,6 +34,14 @@ def build_user_document(
         "role": role,
         "is_verified": is_verified,
         "is_active": True,
+        # Phone OTP verification — mandatory before any real action
+        # (search, accept/reject a request, choose an offer, panic, etc.).
+        # The OTP stub flow flips this to True on successful verify.
+        "phone_verified": False,
+        "phone_verified_at": None,
+        # Trusted contact for the panic button — captured during customer
+        # onboarding. Optional but recommended.
+        "trusted_contact_phone": None,
         "created_at": now,
         "updated_at": now,
         "last_login_at": None,
@@ -52,6 +60,8 @@ def public_user(doc: Optional[Dict]) -> Optional[Dict]:
         "role": doc.get("role"),
         "telegram_user_id": doc.get("telegram_user_id"),
         "is_verified": doc.get("is_verified", False),
+        "phone_verified": doc.get("phone_verified", False),
+        "trusted_contact_phone": doc.get("trusted_contact_phone"),
         "is_active": doc.get("is_active", True),
         "created_at": doc.get("created_at"),
     }

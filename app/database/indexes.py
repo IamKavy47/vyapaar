@@ -85,6 +85,26 @@ async def create_indexes() -> None:
         await m.merchant_cooldowns().create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
 
         await m.notifications().create_index([("created_at", DESCENDING)])
+
+        # Phone OTP verification codes — sha256(code) at rest, TTL auto-cleanup.
+        await m.otp_codes().create_index([("code_hash", ASCENDING)], unique=True)
+        await m.otp_codes().create_index([("phone", ASCENDING), ("created_at", DESCENDING)])
+        await m.otp_codes().create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
+
+        # In-app chat — one chat per request, messages sorted oldest-first.
+        await m.chats().create_index([("request_id", ASCENDING)], unique=True)
+        await m.chats().create_index([("customer_id", ASCENDING), ("updated_at", DESCENDING)])
+        await m.chats().create_index([("merchant_id", ASCENDING), ("updated_at", DESCENDING)])
+        await m.chat_messages().create_index(
+            [("chat_id", ASCENDING), ("created_at", ASCENDING)],
+        )
+        await m.chat_messages().create_index([("request_id", ASCENDING), ("created_at", ASCENDING)])
+
+        # Shop reports + panic events — manual review queue + audit trail.
+        await m.flagged_shops().create_index([("shop_id", ASCENDING), ("created_at", DESCENDING)])
+        await m.flagged_shops().create_index([("status", ASCENDING)])
+        await m.panic_events().create_index([("customer_id", ASCENDING), ("created_at", DESCENDING)])
+
         logger.info("MongoDB indexes ensured (including 2dsphere geospatial indexes)")
     except PyMongoError as exc:
         logger.error("Index creation failed: %s", exc)

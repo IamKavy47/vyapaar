@@ -101,6 +101,8 @@ export interface WebUser {
   role: "customer" | "shopkeeper" | "admin";
   telegram_user_id?: number | null;
   is_verified: boolean;
+  phone_verified?: boolean;
+  trusted_contact_phone?: string | null;
   created_at?: string;
 }
 
@@ -121,6 +123,10 @@ export interface Shop {
   description?: string | null;
   distanceMeters?: number | null;
   inventoryCount: number;
+  shopfrontPhotoUrl?: string | null;
+  verificationStatus?: "pending" | "photo_pending" | "verified" | "rejected";
+  photoUploadedAt?: string | null;
+  photoApprovedAt?: string | null;
   createdAt?: string | null;
 }
 
@@ -338,16 +344,76 @@ export interface KhataEntry {
   createdAt?: string | null;
 }
 
+/* ------------------------------------------------------------------ chat + safety */
+
+export interface ChatMessage {
+  id: string;
+  chatId: string;
+  requestId: string;
+  senderId: string;
+  senderRole: "customer" | "shopkeeper" | "system";
+  text: string;
+  kind: "text" | "system";
+  createdAt: string;
+  readAt?: string | null;
+}
+
+export interface Conversation {
+  id: string;
+  requestId: string;
+  customerId: string;
+  shopId: string;
+  status: "active" | "closed";
+  lastMessageAt?: string | null;
+  lastMessagePreview?: string | null;
+  lastMessageSenderRole?: "customer" | "shopkeeper" | "system" | null;
+  unreadCount: number;
+  createdAt?: string | null;
+}
+
+export interface PendingShop {
+  id: string;
+  shopName: string;
+  category?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  shopfrontPhotoUrl?: string | null;
+  photoUploadedAt?: string | null;
+  photoBrowserLocation?: { lat: number; lng: number } | null;
+  photoExifLocation?: { lat: number; lng: number } | null;
+  verificationStatus: string;
+}
+
+export type FlagReason =
+  | "didnt_honor_price"
+  | "felt_unsafe"
+  | "shop_doesnt_exist"
+  | "harassment_in_chat"
+  | "other";
+
 /* ------------------------------------------------------------------ hooks */
 
 export const api = {
   auth: {
     me: Q<void, WebUser | null>("auth.me", () => apiFetch("/auth/me")),
+    sendOtp: M<{ phone: string }, { sent: boolean; dev_otp?: string; phone?: string }>(
+      (body) => apiFetch("/auth/send-otp", { method: "POST", body }),
+    ),
+    verifyOtp: M<{ phone: string; code: string }, { ok: boolean; phone?: string; user_id?: string }>(
+      (body) => apiFetch("/auth/verify-otp", { method: "POST", body }),
+    ),
     login: M<{ email: string; password: string }, { user: WebUser }>((body) =>
       apiFetch("/auth/login", { method: "POST", body }),
     ),
     register: M<
-      { fullName: string; email: string; phone: string; password: string; role: "customer" | "shopkeeper" },
+      {
+        fullName: string;
+        email: string;
+        phone: string;
+        password: string;
+        role: "customer" | "shopkeeper";
+        otp: string;
+      },
       { user: WebUser }
     >((body) => apiFetch("/auth/register", { method: "POST", body })),
     logout: M<void, { ok: boolean }>(() =>
@@ -394,6 +460,9 @@ export const api = {
     updateLocation: M<{ lat: number; lng: number }, { ok: boolean }>((body) =>
       apiFetch("/profile/location", { method: "POST", body }),
     ),
+    setTrustedContact: M<{ phone: string }, { ok: boolean }>((body) =>
+      apiFetch("/profile/trusted-contact", { method: "PATCH", body }),
+    ),
   },
 
   catalog: {
@@ -435,6 +504,30 @@ export const api = {
       { itemId: string; quantity?: number; lat: number; lng: number },
       { ok: boolean; requestId: string; notified: boolean }
     >((body) => apiFetch("/requests/reserve", { method: "POST", body })),
+    chatHistory: Q<
+      { id: string; since?: string },
+      { messages: ChatMessage[]; since: string | null }
+    >("request.chatHistory", (input) => {
+      const q = input.since ? `?since=${encodeURIComponent(input.since)}` : "";
+      return apiFetch(`/requests/${input.id}/chat${q}`);
+    }),
+    sendChatMessage: M<{ requestId: string; text: string }, ChatMessage>(
+      ({ requestId, text }) =>
+        apiFetch(`/requests/${requestId}/chat/messages`, {
+          method: "POST",
+          body: { text },
+        }),
+    ),
+    flag: M<
+      { requestId: string; reason: FlagReason; note?: string },
+      { ok: boolean; auto_suspended?: boolean }
+    >(({ requestId, ...rest }) =>
+      apiFetch(`/requests/${requestId}/flag`, { method: "POST", body: rest }),
+    ),
+    panic: M<
+      { requestId?: string; latitude: number; longitude: number },
+      { ok: boolean; alerted: boolean; mode: string; message?: string }
+    >((body) => apiFetch("/panic", { method: "POST", body })),
   },
 
   merchant: {
@@ -466,6 +559,55 @@ export const api = {
       { product: string; quantity: number; unit: string; price?: number },
       { ok: boolean; productId?: string }
     >((body) => apiFetch("/merchant/inventory/plan", { method: "POST", body })),
+    uploadShopfrontPhoto: M<
+      { file: File; browserLat: number; browserLng: number },
+      {
+        shopfrontPhotoUrl: string;
+        verificationStatus: string;
+        photoUploadedAt?: string;
+      }
+    >(async ({ file, browserLat, browserLng }) => {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("browser_lat", String(browserLat));
+      form.append("browser_lng", String(browserLng));
+      // Note: apiFetch sets Content-Type to JSON; for multipart we need to
+      // let the browser set the boundary. Hand-rolled fetch here.
+      const res = await fetch(`${API_BASE}/merchant/shop/shopfront-photo`, {
+        method: "POST",
+        credentials: "include",
+        body: form,
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const detail = (data as { detail?: unknown } | null)?.detail;
+        const message = typeof detail === "string" ? detail
+          : `Request failed (${res.status})`;
+        throw new ApiError(res.status, message);
+      }
+      return data as {
+        shopfrontPhotoUrl: string;
+        verificationStatus: string;
+        photoUploadedAt?: string;
+      };
+    }),
+    conversations: Q<void, { conversations: Conversation[] }>("merchant.conversations", () =>
+      apiFetch("/merchant/conversations"),
+    ),
+    conversationHistory: Q<
+      { requestId: string; since?: string },
+      { messages: ChatMessage[]; since: string | null }
+    >("merchant.conversationHistory", (input) => {
+      const q = input.since ? `?since=${encodeURIComponent(input.since)}` : "";
+      return apiFetch(`/merchant/conversations/${input.requestId}${q}`);
+    }),
+    sendChatMessage: M<{ requestId: string; text: string }, ChatMessage>(
+      ({ requestId, text }) =>
+        apiFetch(`/merchant/conversations/${requestId}/messages`, {
+          method: "POST",
+          body: { text },
+        }),
+    ),
     khata: Q<void, { entries: KhataEntry[]; udhaar: number; jama: number; outstanding: number }>(
       "merchant.khata",
       () => apiFetch("/merchant/khata"),
@@ -522,6 +664,22 @@ export const api = {
     >("merchant.impact", (input) => apiFetch(`/merchant/demand/impact${qs(input ?? {})}`)),
   },
 
+  admin: {
+    pendingShops: Q<void, { shops: PendingShop[] }>("admin.pendingShops", () =>
+      apiFetch("/admin/shops/pending"),
+    ),
+    approveShop: M<{ shopId: string }, { shopId: string; isVerified: boolean; approvedAt: string }>(
+      ({ shopId }) =>
+        apiFetch(`/admin/shops/${shopId}/approve`, { method: "POST", body: {} }),
+    ),
+    rejectShop: M<
+      { shopId: string; reason?: string },
+      { shopId: string; isVerified: boolean; reason?: string }
+    >(({ shopId, ...rest }) =>
+      apiFetch(`/admin/shops/${shopId}/reject`, { method: "POST", body: rest }),
+    ),
+  },
+
   useUtils: () => {
     const qc = useQueryClient();
     const byKey = (key: string) => () => qc.invalidateQueries({ queryKey: [key] });
@@ -536,10 +694,14 @@ export const api = {
         opportunities: { invalidate: byKey("merchant.opportunities") },
         heatmap: { invalidate: byKey("merchant.heatmap") },
         impact: { invalidate: byKey("merchant.impact") },
+        conversations: { invalidate: byKey("merchant.conversations") },
+        myShop: { invalidate: byKey("merchant.myShop") },
       },
+      admin: { pendingShops: { invalidate: byKey("admin.pendingShops") } },
       request: {
         detail: (id: string) => qc.invalidateQueries({ queryKey: ["request.detail", { id }] }),
         offers: (id: string) => qc.invalidateQueries({ queryKey: ["request.offers", { id }] }),
+        chatHistory: (id: string) => qc.invalidateQueries({ queryKey: ["request.chatHistory", { id }] }),
       },
     };
   },

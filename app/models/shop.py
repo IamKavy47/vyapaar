@@ -102,6 +102,16 @@ def build_shop_document(
         "description": description.strip(),
         "is_active": True,
         "is_verified": is_verified,
+        # Shopfront photo verification — the visible trust signal that
+        # customers see before walking to the shop. Empty until the
+        # shopkeeper uploads a geo-tagged photo from inside the PWA AND
+        # an admin approves it (manual step for the hackathon).
+        "shopfront_photo_url": None,
+        "photo_browser_location": None,        # {lat, lng} captured by browser
+        "photo_exif_location": None,           # {lat, lng} parsed from JPEG
+        "photo_uploaded_at": None,
+        "photo_approved_at": None,
+        "verification_status": "pending",       # pending | photo_pending | verified | rejected
         "accepted_count": 0,
         "declined_count": 0,
         "notified_count": 0,

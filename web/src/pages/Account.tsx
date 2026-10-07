@@ -1,12 +1,16 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
-import { LogOut, Store, ShoppingBag, ChevronRight, BadgeCheck, Send } from "lucide-react";
+import {
+  LogOut, Store, ShoppingBag, ChevronRight, BadgeCheck, Send,
+  Phone, ShieldCheck, AlertTriangle,
+} from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { api as trpc, ApiError } from "@/lib/api";
 import { TopBar } from "@/components/shell";
 import { CategoryIcon } from "@/components/brand";
 import { LocationPicker } from "@/components/LocationPicker";
+import { ShopfrontPhotoCapture } from "@/components/ShopfrontPhotoCapture";
 
 export default function Account() {
   const { user, logout, refresh } = useAuth();
@@ -49,6 +53,16 @@ export default function Account() {
     toast.success("Aapki location save ho gayi");
   };
 
+  // Trusted-contact phone for the customer panic button.
+  const setTrustedContact = trpc.profile.setTrustedContact.useMutation({
+    onSuccess: () => {
+      toast.success("Trusted contact save ho gaya — panic button ab kaam karega.");
+      refresh();
+    },
+    onError: (e) => toast.error(e instanceof ApiError ? e.message : "Save nahi ho paaya."),
+  });
+  const [trustedPhone, setTrustedPhone] = useState("");
+
   return (
     <div>
       <TopBar title="You" sub="Account aur settings" />
@@ -63,10 +77,21 @@ export default function Account() {
           <div className="min-w-0">
             <div className="font-display text-[20px] leading-tight truncate">{user?.full_name ?? "LocalMart User"}</div>
             <div className="text-[12.5px] font-bold text-brand-ink/60 truncate mt-0.5">{user?.email ?? ""}</div>
-            <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-brand-ink bg-brand-cream px-2.5 py-0.5 text-[10.5px] font-extrabold uppercase tracking-wide mt-2">
-              {role === "shopkeeper" ? <Store className="w-3 h-3" /> : <ShoppingBag className="w-3 h-3" />}
-              {role === "shopkeeper" ? "Dukaandaar" : "Customer"}
-            </span>
+            <div className="flex items-center gap-1.5 flex-wrap mt-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-brand-ink bg-brand-cream px-2.5 py-0.5 text-[10.5px] font-extrabold uppercase tracking-wide">
+                {role === "shopkeeper" ? <Store className="w-3 h-3" /> : <ShoppingBag className="w-3 h-3" />}
+                {role === "shopkeeper" ? "Dukaandaar" : "Customer"}
+              </span>
+              {user?.phone_verified ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-brand-green/15 text-brand-green px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide">
+                  <ShieldCheck className="w-3 h-3" /> Phone verified
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full bg-[#F03749]/15 text-[#F03749] px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide">
+                  <AlertTriangle className="w-3 h-3" /> Phone not verified
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </section>
@@ -88,10 +113,66 @@ export default function Account() {
           <ChevronRight className="w-5 h-5 text-brand-ink/30" />
         </button>
       )}
+
+      {/* Shopfront photo capture (shopkeeper only) — verification gate */}
+      {role === "shopkeeper" && shop && (
+        <div className="mt-4">
+          <ShopfrontPhotoCapture
+            shopId={shop.id}
+            currentPhotoUrl={shop.shopfrontPhotoUrl}
+            verificationStatus={shop.verificationStatus}
+            onUploaded={async () => { await utils.profile.get.invalidate(); await utils.merchant.myShop.invalidate(); }}
+          />
+        </div>
+      )}
+
       <LocationPicker
         shopMode={role === "shopkeeper"}
         onSave={role === "shopkeeper" && shop ? saveShopLocation : saveCustomerLocation}
       />
+
+      {/* Trusted contact (customer only) — for the panic button */}
+      {role === "customer" && (
+        <section className="mt-4 rounded-3xl border-2 border-brand-ink/12 bg-card p-4">
+          <div className="flex items-center gap-2">
+            <Phone className="w-5 h-5 text-[#F03749]" />
+            <div className="flex-1">
+              <div className="font-extrabold text-[14.5px]">Trusted contact</div>
+              <div className="text-[10.5px] font-bold text-muted-foreground">
+                Panic button dabane par yeh number ko aapki location + shop details bheji jayegi.
+              </div>
+            </div>
+          </div>
+          <div className="mt-2 flex items-center gap-2 rounded-2xl border-2 border-brand-ink/15 bg-background px-3 py-1">
+            <input
+              value={trustedPhone || (user?.trusted_contact_phone ?? "")}
+              onChange={(e) => setTrustedPhone(e.target.value)}
+              placeholder="10-digit phone number"
+              inputMode="tel"
+              maxLength={13}
+              className="min-w-0 flex-1 bg-transparent py-2.5 text-[14px] font-bold outline-none"
+            />
+            <button
+              onClick={async () => {
+                if (trustedPhone.trim().length < 10) {
+                  toast.error("Valid phone number likho");
+                  return;
+                }
+                await setTrustedContact.mutateAsync({ phone: trustedPhone.trim() });
+              }}
+              disabled={setTrustedContact.isPending}
+              className="rounded-full border-2 border-brand-ink bg-brand-ink text-brand-yellow text-[11.5px] font-extrabold py-2 px-3 disabled:opacity-50"
+            >
+              Save
+            </button>
+          </div>
+          {user?.trusted_contact_phone && !trustedPhone && (
+            <p className="text-[10.5px] font-bold text-brand-green mt-1 flex items-center gap-1">
+              <ShieldCheck className="w-3 h-3" /> Currently set: {user.trusted_contact_phone}
+            </p>
+          )}
+        </section>
+      )}
 
       {/* actions */}
       <section className="mt-5 rounded-[28px] border-2 border-brand-ink/12 bg-card overflow-hidden divide-y-2 divide-brand-ink/5">

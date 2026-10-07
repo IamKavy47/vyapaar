@@ -2,15 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import {
-  Phone, Navigation, PartyPopper, Filter,
+  Phone, Navigation, PartyPopper, Filter, Siren, Share2,
 } from "lucide-react";
-import { api as trpc } from "@/lib/api";
+import { api as trpc, type FlagReason } from "@/lib/api";
 import { useLocation } from "@/lib/location";
 import { TopBar } from "@/components/shell";
 import { CategoryIcon, Thinking } from "@/components/brand";
 import {
   OfferCard, SORT_OPTIONS, sortOffers, type OfferSortKey,
 } from "@/components/OfferCard";
+import { ChatDrawer } from "@/components/ChatDrawer";
 import { formatDistance, formatINR, clsx } from "@/lib/format";
 import { categoryMeta } from "@/lib/localmart";
 
@@ -54,6 +55,49 @@ export default function SearchFlow() {
     },
     onError: (e) => toast.error(e.message),
   });
+  const flagShop = trpc.request.flag.useMutation({
+    onSuccess: (data) => {
+      toast.success(
+        data.auto_suspended
+          ? "Reported — shop abhi turant suspend ho gaya hai (safety reason)."
+          : "Reported — admin review ke liye bhej diya.",
+      );
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  const panic = trpc.request.panic.useMutation({
+    onSuccess: (data) => {
+      toast(data.message ?? "Panic alert recorded.", { duration: 6000 });
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  // Chat drawer state — opens when customer taps Chat on the chosen offer.
+  const [chatOpen, setChatOpen] = useState(false);
+
+  const triggerPanic = async () => {
+    if (location.lat == null || location.lng == null) {
+      toast.error("Panic ke liye location permission do.");
+      location.locate();
+      return;
+    }
+    if (!confirm("Panic button dabana hai? Aapke trusted contact ko alert jaayegi.")) return;
+    await panic.mutateAsync({
+      requestId: requestId ?? undefined,
+      latitude: location.lat,
+      longitude: location.lng,
+    });
+  };
+
+  const shareTrip = () => {
+    // Open Google Maps so the customer can start live-trip sharing with their family.
+    // (Google Maps' trip-share UI is a manual start — we just deep-link them there.)
+    if (selectedOffer?.shop?.lat && selectedOffer?.shop?.lng) {
+      const url = `https://www.google.com/maps/dir/?api=1&destination=${selectedOffer.shop.lat},${selectedOffer.shop.lng}`;
+      window.open(url, "_blank", "noopener");
+      toast.success("Maps khul gaya. Top-right → 'Share trip' → family ko bhej do.");
+    }
+  };
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -341,6 +385,10 @@ export default function SearchFlow() {
                   isSelected={o.id === selectedMatchId}
                   onChoose={() => choose.mutate({ offerId: o.id })}
                   onOpen={() => navigate(`/shop/${o.shopId}`)}
+                  onChat={o.status === "accepted" ? () => setChatOpen(true) : undefined}
+                  onFlag={(reason: FlagReason) =>
+                    flagShop.mutate({ requestId: o.requestId, reason })
+                  }
                 />
               ))}
             </div>
@@ -394,6 +442,26 @@ export default function SearchFlow() {
                     )}
                   </div>
                 )}
+
+                {/* Safety row — Share trip + Panic */}
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={shareTrip}
+                    className="rounded-full border-2 border-brand-ink/30 bg-card text-brand-ink text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5"
+                  >
+                    <Share2 className="w-3.5 h-3.5" /> Share trip
+                  </button>
+                  <button
+                    type="button"
+                    onClick={triggerPanic}
+                    disabled={panic.isPending}
+                    className="rounded-full border-2 border-[#F03749] bg-[#F03749] text-brand-cream text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    <Siren className="w-3.5 h-3.5" /> Panic
+                  </button>
+                </div>
+
                 <p className="text-[10.5px] font-bold text-brand-ink/55 mt-2 text-center">
                   Dukaan pe jaake le lo — ya call karke rakhwa lo.
                 </p>
@@ -419,6 +487,18 @@ export default function SearchFlow() {
       >
         Nayi khoj →
       </button>
+
+      {/* Chat drawer — opens when customer taps Chat on the chosen offer */}
+      {chatOpen && selectedOffer && (
+        <ChatDrawer
+          requestId={selectedOffer.requestId}
+          shopName={selectedOffer.shop?.name}
+          shopfrontPhotoUrl={selectedOffer.shop?.shopfrontPhotoUrl}
+          shopAddress={selectedOffer.shop?.address}
+          side="customer"
+          onClose={() => setChatOpen(false)}
+        />
+      )}
     </div>
   );
 }

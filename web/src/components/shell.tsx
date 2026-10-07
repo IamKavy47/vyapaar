@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { NavLink, Outlet, useNavigate, useLocation as useRouteLocation, Link } from "react-router";
 import {
   Home, Store, ArrowLeftRight, ClipboardList, UserRound,
-  Inbox, Package, BookOpenText, TrendingUp, ArrowLeft, BarChart3,
+  Inbox, Package, BookOpenText, TrendingUp, ArrowLeft, BarChart3, ShieldCheck,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { api as trpc } from "@/lib/api";
@@ -23,6 +23,11 @@ const MERCHANT_NAV = [
   { to: "/merchant/demand", label: "Demand", icon: TrendingUp },
   { to: "/merchant/impact", label: "Impact", icon: BarChart3 },
   { to: "/merchant/khata", label: "Khata", icon: BookOpenText },
+  { to: "/account", label: "You", icon: UserRound },
+];
+
+const ADMIN_NAV = [
+  { to: "/admin/shops/pending", label: "Verify", icon: ShieldCheck, end: true },
   { to: "/account", label: "You", icon: UserRound },
 ];
 
@@ -50,8 +55,11 @@ export function AppShell() {
     );
   }
 
-  const role = profile.data?.appRole ?? "customer";
-  const nav = role === "shopkeeper" ? MERCHANT_NAV : CUSTOMER_NAV;
+  const role = profile.data?.appRole
+    ?? (user.role === "admin" ? "admin" : "customer");
+  const nav = role === "shopkeeper" ? MERCHANT_NAV
+    : role === "admin" ? ADMIN_NAV
+    : CUSTOMER_NAV;
 
   return (
     <div className="min-h-dvh bg-background">
