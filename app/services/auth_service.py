@@ -484,15 +484,57 @@ async def is_phone_verified(user_id) -> bool:
 
 
 async def _dispatch_sms(phone: str, text: str) -> None:
-    """Production SMS dispatch — placeholder for MSG91 / Twilio."""
+    """Production SMS dispatch via MSG91 or Twilio.
+
+    Called by ``send_otp`` (when OTP_STUB_MODE=false) and by the panic
+    button (when PANIC_SMS_STUB=false). Returns silently on success;
+    raises on failure so the caller can show a user-safe error.
+    """
+    # Twilio is the primary gateway — supports any country, has a free trial.
+    if settings.SMS_GATEWAY == "twilio":
+        if not (settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN
+                and settings.TWILIO_FROM_NUMBER):
+            logger.error(
+                "Twilio SMS not configured — need TWILIO_ACCOUNT_SID, "
+                "TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER | to=%s", phone,
+            )
+            raise OTPError("SMS gateway not configured. Contact support.")
+        try:
+            # Run the synchronous Twilio client in a thread so we don't
+            # block the FastAPI event loop.
+            import asyncio
+            await asyncio.to_thread(_twilio_send, phone, text)
+            logger.info("SMS sent via Twilio | to=%s len=%d", phone, len(text))
+        except Exception as exc:
+            logger.error("Twilio SMS dispatch failed | to=%s | %s", phone, exc)
+            raise OTPError("Could not send SMS. Please try again in a minute.") from exc
+        return
+
     if settings.SMS_GATEWAY == "msg91":
         # TODO: wire MSG91 transactional SMS API.
         # https://api.msg91.com/apidoc/textsms/sendv5
         logger.warning("MSG91 SMS gateway not yet wired — message dropped | to=%s", phone)
-        return
-    if settings.SMS_GATEWAY == "twilio":
-        # TODO: wire Twilio Programmable SMS.
-        logger.warning("Twilio SMS gateway not yet wired — message dropped | to=%s", phone)
-        return
-    # Default: no-op (stub mode handled by the caller).
+        raise OTPError("MSG91 gateway not yet implemented. Use SMS_GATEWAY=twilio or stub.")
+
+    # Default no-op (stub mode is handled by the caller).
     return
+
+
+def _twilio_send(phone: str, text: str) -> None:
+    """Synchronous Twilio dispatch — wrapped in asyncio.to_thread by the caller."""
+    from twilio.rest import Client
+    client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+    # Phone is normalised to "91XXXXXXXXXX" (no +). Twilio wants E.164.
+    to_e164 = phone if phone.startswith("+") else f"+{phone}"
+    from_e164 = (settings.TWILIO_FROM_NUMBER if settings.TWILIO_FROM_NUMBER.startswith("+")
+                 else f"+{settings.TWILIO_FROM_NUMBER}")
+    message = client.messages.create(
+        body=text,
+        from_=from_e164,
+        to=to_e164,
+    )
+    if message.error_code:
+        logger.error("Twilio returned error | code=%s msg=%s sid=%s",
+                     message.error_code, message.error_message, message.sid)
+        raise RuntimeError(f"Twilio error {message.error_code}: {message.error_message}")
+    logger.info("Twilio message sid=%s status=%s", message.sid, message.status)
