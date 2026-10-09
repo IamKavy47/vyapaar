@@ -34,6 +34,14 @@ logger = get_logger(__name__)
 
 async def record_event(*, request: Dict, merchant_id, response: str,
                        price: Optional[float] = None) -> None:
+    """Record a demand event for a merchant YES/NO response.
+
+    Idempotent: if a demand event already exists for the same
+    (request_id, merchant_id) — which can happen on retries or race
+    conditions — the DuplicateKeyError from the unique index is caught
+    and logged as a no-op rather than crashing the handler.
+    """
+    from pymongo.errors import DuplicateKeyError
     doc = build_demand_event(
         request_id=request["request_id"],
         merchant_id=ObjectId(str(merchant_id)),
@@ -45,8 +53,19 @@ async def record_event(*, request: Dict, merchant_id, response: str,
         response=response,
         price=price,
     )
-    await m.demand_events().insert_one(doc)
-    logger.info("demand event | product=%s response=%s", doc["product"], response)
+    try:
+        await m.demand_events().insert_one(doc)
+        logger.info("demand event | product=%s response=%s", doc["product"], response)
+    except DuplicateKeyError:
+        # The unique index on (request_id, merchant_id) prevents duplicate
+        # demand events. If the same merchant responds twice (which
+        # record_response already blocks at the match layer), or a retry
+        # reaches here, the duplicate insert is silently ignored — this
+        # is the correct idempotent behaviour, not an error.
+        logger.debug(
+            "demand event already recorded (idempotent skip) | request=%s merchant=%s",
+            request.get("request_id"), merchant_id,
+        )
 
 
 async def top_products(*, days: int = 30, limit: int = 10, merchant_id=None,
