@@ -380,6 +380,34 @@ export interface CreateRequestResult {
 /** Inbox rows always carry their parent request. */
 export type InboxItem = Offer & { request: CustomerRequest };
 
+export interface CreateOrderResult {
+  orderId: string;
+  amount: number;
+  currency: string;
+  keyId: string;
+  productName: string;
+  shopName: string;
+  isService: boolean;
+}
+
+export interface VerifyPaymentResult {
+  ok: boolean;
+  paymentId: string;
+  orderId: string;
+  amountPaise?: number | null;
+  product?: string | null;
+  shopName?: string | null;
+}
+
+export interface PaymentStatus {
+  status: string;
+  amountPaise?: number | null;
+  currency?: string | null;
+  razorpayPaymentId?: string | null;
+  paidAt?: string | null;
+  message?: string;
+}
+
 export interface KhataEntry {
   id: string;
   customerName: string;
@@ -751,6 +779,20 @@ export const api = {
       { shopId: string; isVerified: boolean; reason?: string }
     >(({ shopId, ...rest }) =>
       apiFetch(`/admin/shops/${shopId}/reject`, { method: "POST", body: rest }),
+    ),
+  },
+
+  payments: {
+    createOrder: M<
+      { requestId: string; matchId: string; amountPaise: number; isService?: boolean },
+      CreateOrderResult
+    >((body) => apiFetch("/payments/create-order", { method: "POST", body })),
+    verify: M<
+      { razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature: string },
+      VerifyPaymentResult
+    >((body) => apiFetch("/payments/verify", { method: "POST", body })),
+    status: Q<{ requestId: string }, PaymentStatus>("payments.status", (input) =>
+      apiFetch(`/payments/status/${input.requestId}`),
     ),
   },
 

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import {
-  Phone, Navigation, PartyPopper, Filter, Siren, Share2,
+  Phone, Navigation, PartyPopper, Filter, Siren, Share2, CreditCard,
 } from "lucide-react";
 import { api as trpc, type FlagReason } from "@/lib/api";
 import { useLocation } from "@/lib/location";
@@ -72,6 +72,16 @@ export default function SearchFlow() {
     onError: (e) => toast.error(e.message),
   });
 
+  // Razorpay payment
+  const createOrder = trpc.payments.createOrder.useMutation();
+  const verifyPayment = trpc.payments.verify.useMutation({
+    onSuccess: (data) => {
+      toast.success(`Payment verified! ₹${(data.amountPaise ?? 0) / 100} paid to ${data.shopName ?? "shop"}.`);
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  const [paying, setPaying] = useState(false);
+
   // Chat drawer state — opens when customer taps Chat on the chosen offer.
   const [chatOpen, setChatOpen] = useState(false);
 
@@ -96,6 +106,69 @@ export default function SearchFlow() {
       const url = `https://www.google.com/maps/dir/?api=1&destination=${selectedOffer.shop.lat},${selectedOffer.shop.lng}`;
       window.open(url, "_blank", "noopener");
       toast.success("Maps khul gaya. Top-right → 'Share trip' → family ko bhej do.");
+    }
+  };
+
+  const payNow = async () => {
+    if (!selectedOffer || !requestId || !selectedOffer.price) {
+      toast.error("Pehle ek dukaan chuno jo price confirm kare.");
+      return;
+    }
+    setPaying(true);
+    try {
+      // 1. Create a Razorpay order on the backend
+      const order = await createOrder.mutateAsync({
+        requestId,
+        matchId: selectedOffer.id,
+        amountPaise: Math.round(selectedOffer.price * 100), // ₹ → paise
+        isService: selectedOffer.shop?.shopType === "service",
+      });
+      // 2. Load the Razorpay JS SDK if not already loaded
+      if (!(window as any).Razorpay) {
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://checkout.razorpay.com/v1/checkout.js";
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error("Razorpay SDK load failed"));
+          document.head.appendChild(script);
+        });
+      }
+      // 3. Open the Razorpay checkout modal
+      const rzp = new (window as any).Razorpay({
+        key: order.keyId,
+        amount: order.amount,
+        currency: order.currency,
+        name: "Vyapaar-Mitra",
+        description: order.productName + (order.isService ? " (Service)" : ""),
+        image: "/icons/icon-192.png",
+        order_id: order.orderId,
+        handler: async (response: any) => {
+          // 4. Verify the payment signature on the backend
+          try {
+            await verifyPayment.mutateAsync({
+              razorpayOrderId: response.razorpay_order_id,
+              razorpayPaymentId: response.razorpay_payment_id,
+              razorpaySignature: response.razorpay_signature,
+            });
+          } catch {
+            toast.error("Payment verify nahi hua — agar paise kat hain to support se sampark karein.");
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            toast("Payment closed — aap baad mein bhi pay kar sakte hain.");
+          },
+        },
+        prefill: {
+          name: undefined, // could prefill from user profile
+        },
+        theme: { color: "#009146" },
+      });
+      rzp.open();
+    } catch (e: any) {
+      toast.error(e?.message ?? "Payment start nahi hua — phir try karo.");
+    } finally {
+      setPaying(false);
     }
   };
 
@@ -443,14 +516,27 @@ export default function SearchFlow() {
                   </div>
                 )}
 
-                {/* Safety row — Share trip + Panic */}
-                <div className="mt-2 grid grid-cols-2 gap-2">
+                {/* Safety row — Pay + Share trip + Panic */}
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {selectedOffer.price != null && (
+                    <button
+                      type="button"
+                      onClick={payNow}
+                      disabled={paying || createOrder.isPending}
+                      className="rounded-full border-2 border-brand-ink bg-brand-ink text-brand-yellow text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    >
+                      <CreditCard className="w-3.5 h-3.5" /> Pay
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={shareTrip}
-                    className="rounded-full border-2 border-brand-ink/30 bg-card text-brand-ink text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5"
+                    className={clsx(
+                      "rounded-full border-2 border-brand-ink/30 bg-card text-brand-ink text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5",
+                      selectedOffer.price == null && "col-span-1",
+                    )}
                   >
-                    <Share2 className="w-3.5 h-3.5" /> Share trip
+                    <Share2 className="w-3.5 h-3.5" /> Trip
                   </button>
                   <button
                     type="button"

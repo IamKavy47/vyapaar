@@ -184,3 +184,9 @@ def product_images() -> AsyncIOMotorCollection:
     don't re-fetch the same product image every time a shopkeeper adds the
     same product."""
     return collection("product_images")
+
+
+def payments() -> AsyncIOMotorCollection:
+    """Razorpay payment records — one per customer checkout. Linked to the
+    product_request + merchant_match for audit trail."""
+    return collection("payments")

@@ -2191,3 +2191,118 @@ async def web_merchant_send_chat_message(
     except ChatError as exc:
         _error(400, str(exc))
     return msg
+
+
+# ----------------------------------------------------------------- Payments
+# Razorpay in-app payment flow:
+#   1. Customer picks a shop (select_offer → COMPLETED).
+#   2. Customer taps "Pay" → POST /payments/create-order → Razorpay order_id.
+#   3. Frontend opens Razorpay checkout (JS SDK) with the order_id.
+#   4. After payment, frontend calls POST /payments/verify → server verifies signature.
+#   5. Backup: Razorpay webhook → POST /payments/webhook.
+# Payments work for BOTH products (shop + vendor) and services (plumber etc.).
+
+from app.services import payment_service
+from app.services.payment_service import PaymentError
+
+
+class CreateOrderBody(BaseModel):
+    requestId: str
+    matchId: str
+    amountPaise: int = Field(ge=100)  # min ₹1
+    isService: bool = False
+
+
+@router.post("/payments/create-order")
+async def web_create_payment_order(
+    body: CreateOrderBody, user: dict = Depends(require_verified_user),
+):
+    """Create a Razorpay order for the customer to pay the shopkeeper.
+
+    The customer must own the request (the shop must have been selected via
+    select_offer). The amount is in paise (₹1 = 100 paise).
+    """
+    request_doc = await search_service.get_request(body.requestId)
+    if not request_doc or str(request_doc.get("customer_id")) != str(user["_id"]):
+        _error(403, "Not your request")
+    if request_doc.get("status") != RequestStatus.COMPLETED.value:
+        _error(400, "Pay after you pick a shop")
+    selected_match_id = request_doc.get("selected_match_id")
+    if not selected_match_id or str(selected_match_id) != str(body.matchId):
+        _error(400, "You can only pay the shop you selected")
+
+    match = await merchant_matching.get_match(body.matchId)
+    if not match:
+        _error(404, "Offer not found")
+    shop = await m.shops().find_one({"_id": match["merchant_id"]})
+    if not shop:
+        _error(404, "Shop not found")
+
+    try:
+        return await payment_service.create_order(
+            request_id=body.requestId,
+            match_id=body.matchId,
+            amount_paise=body.amountPaise,
+            customer_id=user["_id"],
+            shop_id=match["merchant_id"],
+            product=request_doc.get("product") or "Item",
+            customer_name=user.get("full_name") or "",
+            shop_name=shop.get("shop_name") or "",
+            is_service=body.isService or shop.get("shop_type") == "service",
+        )
+    except PaymentError as exc:
+        _error(400, str(exc))
+
+
+class VerifyPaymentBody(BaseModel):
+    razorpayOrderId: str
+    razorpayPaymentId: str
+    razorpaySignature: str
+
+
+@router.post("/payments/verify")
+async def web_verify_payment(
+    body: VerifyPaymentBody, user: dict = Depends(require_verified_user),
+):
+    """Verify the Razorpay payment signature after checkout."""
+    try:
+        return await payment_service.verify_payment(
+            razorpay_order_id=body.razorpayOrderId,
+            razorpay_payment_id=body.razorpayPaymentId,
+            razorpay_signature=body.razorpaySignature,
+        )
+    except PaymentError as exc:
+        _error(400, str(exc))
+
+
+@router.post("/payments/webhook")
+async def web_razorpay_webhook(request: Request):
+    """Razorpay webhook — backup payment verification.
+
+    The body is read as raw bytes + the signature is in the X-Razorpay-Signature
+    header. This endpoint is NOT behind the session cookie auth — Razorpay
+    authenticates via the webhook secret.
+    """
+    body = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature", "")
+    return await payment_service.handle_webhook(body, signature)
+
+
+@router.get("/payments/status/{request_id}")
+async def web_payment_status(
+    request_id: str, user: dict = Depends(require_verified_user),
+):
+    """Get the payment status for a request (for the Deal pakki! panel)."""
+    request_doc = await search_service.get_request(request_id)
+    if not request_doc or str(request_doc.get("customer_id")) != str(user["_id"]):
+        _error(404, "Request not found")
+    payment = await payment_service.get_payment_for_request(request_id)
+    if not payment:
+        return {"status": "none", "message": "No payment initiated yet."}
+    return {
+        "status": payment.get("status"),
+        "amountPaise": payment.get("amount_paise"),
+        "currency": payment.get("currency"),
+        "razorpayPaymentId": payment.get("razorpay_payment_id"),
+        "paidAt": _iso(payment.get("paid_at")),
+    }

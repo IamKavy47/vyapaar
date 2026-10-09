@@ -156,6 +156,17 @@ class Settings(BaseSettings):
     # cost is incurred.
     PANIC_SMS_STUB: bool = True
 
+    # ---------------- Razorpay (payments) ----------------
+    # Razorpay is the payment gateway for in-app payments. The customer pays
+    # when picking up a product/service — the shopkeeper confirms availability,
+    # the customer pays via UPI/card/netbanking, and the payment is linked
+    # to the request + match for audit trail.
+    # Get keys at https://dashboard.razorpay.com/app/keys
+    RAZORPAY_KEY_ID: str = ""
+    RAZORPAY_KEY_SECRET: str = ""
+    RAZORPAY_WEBHOOK_SECRET: str = ""
+    RAZORPAY_CURRENCY: str = "INR"
+
     # A customer's own range preference. Defaults to the 5km auto-expansion
     # ceiling above, but each customer can widen or narrow it — rural users
     # often need more than 5km, dense markets often want less noise.

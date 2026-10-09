@@ -110,6 +110,11 @@ async def create_indexes() -> None:
         await m.product_images().create_index([("product_key", ASCENDING)], unique=True)
         await m.product_images().create_index([("fetched_at", DESCENDING)])
 
+        # Payments — Razorpay order + payment records linked to request+match.
+        await m.payments().create_index([("razorpay_order_id", ASCENDING)], unique=True)
+        await m.payments().create_index([("request_id", ASCENDING)])
+        await m.payments().create_index([("customer_id", ASCENDING), ("created_at", DESCENDING)])
+
         logger.info("MongoDB indexes ensured (including 2dsphere geospatial indexes)")
     except PyMongoError as exc:
         logger.error("Index creation failed: %s", exc)
