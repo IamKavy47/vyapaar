@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import {
-  Phone, Navigation, PartyPopper, Filter, Siren, Share2, CreditCard,
+  Phone, Navigation, PartyPopper, Filter, Siren, Share2, CreditCard, CircleCheck,
 } from "lucide-react";
 import { api as trpc, type FlagReason } from "@/lib/api";
 import { useLocation } from "@/lib/location";
@@ -77,10 +77,18 @@ export default function SearchFlow() {
   const verifyPayment = trpc.payments.verify.useMutation({
     onSuccess: (data) => {
       toast.success(`Payment verified! ₹${(data.amountPaise ?? 0) / 100} paid to ${data.shopName ?? "shop"}.`);
+      // Refetch the request detail + payment status so the UI updates immediately
+      detail.refetch();
+      paymentStatus.refetch();
     },
     onError: (e) => toast.error(e.message),
   });
   const [paying, setPaying] = useState(false);
+  // Poll payment status for the current request (every 5s when a request is selected)
+  const paymentStatus = trpc.payments.status.useQuery(
+    { requestId: requestId ?? "" },
+    { enabled: requestId != null, refetchInterval: 5000 },
+  );
 
   // Chat drawer state — opens when customer taps Chat on the chosen offer.
   const [chatOpen, setChatOpen] = useState(false);
@@ -516,37 +524,44 @@ export default function SearchFlow() {
                   </div>
                 )}
 
-                {/* Safety row — Pay + Share trip + Panic */}
-                <div className="mt-2 grid grid-cols-3 gap-2">
-                  {selectedOffer.price != null && (
+                {/* Payment status OR Pay button */}
+                {paymentStatus.data?.status === "paid" ? (
+                  <div className="mt-2 rounded-full border-2 border-brand-green bg-brand-green text-brand-cream text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5">
+                    <CircleCheck className="w-3.5 h-3.5" /> Payment done ✓
+                    {paymentStatus.data.amountPaise && ` · ₹${paymentStatus.data.amountPaise / 100}`}
+                  </div>
+                ) : (
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    {selectedOffer.price != null && (
+                      <button
+                        type="button"
+                        onClick={payNow}
+                        disabled={paying || createOrder.isPending}
+                        className="rounded-full border-2 border-brand-ink bg-brand-ink text-brand-yellow text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5 disabled:opacity-50"
+                      >
+                        <CreditCard className="w-3.5 h-3.5" /> Pay
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={payNow}
-                      disabled={paying || createOrder.isPending}
-                      className="rounded-full border-2 border-brand-ink bg-brand-ink text-brand-yellow text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5 disabled:opacity-50"
+                      onClick={shareTrip}
+                      className={clsx(
+                        "rounded-full border-2 border-brand-ink/30 bg-card text-brand-ink text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5",
+                        selectedOffer.price == null && "col-span-1",
+                      )}
                     >
-                      <CreditCard className="w-3.5 h-3.5" /> Pay
+                      <Share2 className="w-3.5 h-3.5" /> Trip
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={shareTrip}
-                    className={clsx(
-                      "rounded-full border-2 border-brand-ink/30 bg-card text-brand-ink text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5",
-                      selectedOffer.price == null && "col-span-1",
-                    )}
-                  >
-                    <Share2 className="w-3.5 h-3.5" /> Trip
-                  </button>
-                  <button
-                    type="button"
-                    onClick={triggerPanic}
-                    disabled={panic.isPending}
-                    className="rounded-full border-2 border-[#F03749] bg-[#F03749] text-brand-cream text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5 disabled:opacity-50"
-                  >
-                    <Siren className="w-3.5 h-3.5" /> Panic
-                  </button>
-                </div>
+                    <button
+                      type="button"
+                      onClick={triggerPanic}
+                      disabled={panic.isPending}
+                      className="rounded-full border-2 border-[#F03749] bg-[#F03749] text-brand-cream text-[11px] font-extrabold py-2 flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    >
+                      <Siren className="w-3.5 h-3.5" /> Panic
+                    </button>
+                  </div>
+                )}
 
                 <p className="text-[10.5px] font-bold text-brand-ink/55 mt-2 text-center">
                   Dukaan pe jaake le lo — ya call karke rakhwa lo.
