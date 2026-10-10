@@ -140,6 +140,13 @@ class Settings(BaseSettings):
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_FROM_NUMBER: str = ""
+    # Twilio Verify (preferred for India — DLT-compliant, Twilio manages OTP
+    # generation + validation + rate limiting + 10-min expiry). When this SID
+    # is set AND SMS_GATEWAY == "twilio", send_otp/verify_otp use the Verify
+    # API instead of the basic SMS API. Verify has 200 free verifications/month
+    # on the Starter plan. Create a Verify Service at:
+    # Twilio Console → Verify → Services → Create new
+    TWILIO_VERIFY_SERVICE_SID: str = ""
 
     # ---------------- Shopfront photo verification ----------------
     # Shopkeeper takes a photo of their shop exterior from inside the PWA;
