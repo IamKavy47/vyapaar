@@ -345,7 +345,24 @@ def _hash_otp(code: str) -> str:
 
 
 def _generate_otp(length: int = 6) -> str:
-    """Cryptographically random numeric OTP of the given length."""
+    """Generate an OTP code.
+
+    In stub mode (OTP_STUB_MODE=true), returns the fixed demo code from
+    ``OTP_DEMO_CODE`` (defaults to "123456") so the hackathon demo can
+    show + auto-fill it on the frontend. The hash check in ``consume_otp``
+    still validates the code against the stored hash — so demo OTPs are
+    real OTPs, just predictable + non-random.
+
+    In production (OTP_STUB_MODE=false), returns a cryptographically random
+    numeric OTP of the given length.
+    """
+    if settings.OTP_STUB_MODE and settings.OTP_DEMO_CODE:
+        # Pad/truncate to match OTP_LENGTH so the consume-side digit-length
+        # check still passes.
+        code = settings.OTP_DEMO_CODE
+        if len(code) < length:
+            code = code + "0" * (length - len(code))
+        return code[:length]
     alphabet = "0123456789"
     return "".join(secrets.choice(alphabet) for _ in range(length))
 

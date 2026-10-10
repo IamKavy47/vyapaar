@@ -49,8 +49,13 @@ export default function Login() {
     onSuccess: (data) => {
       setOtpSent(true);
       if (data.dev_otp) {
-        // Stub mode (hackathon convenience) — paste the OTP from the network response.
-        toast(`OTP sent (stub mode): ${data.dev_otp}`, { duration: 8000 });
+        // Demo / stub mode — auto-fill the OTP input so the user can just
+        // click "Account banao" without typing anything. No SMS gateway
+        // needed for the hackathon demo.
+        setOtp(data.dev_otp);
+        toast.success(`Demo OTP: ${data.dev_otp} (auto-filled — just press submit)`, {
+          duration: 12000,
+        });
       } else {
         toast.success("OTP SMS bhej diya. Code dakhil karein.");
       }
@@ -248,18 +253,29 @@ export default function Login() {
                   ))}
                 </div>
                 {otpSent && (
-                  <div className="rounded-2xl border-2 border-brand-green/40 bg-brand-green/5 p-2.5 flex items-center gap-2 lm-pop">
-                    <ShieldCheck className="w-5 h-5 text-brand-green shrink-0" />
-                    <input
-                      value={otp}
-                      onChange={(e) => setOtp(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && submit()}
-                      placeholder="6-digit OTP"
-                      inputMode="numeric"
-                      maxLength={8}
-                      autoComplete="one-time-code"
-                      className="min-w-0 flex-1 bg-transparent font-bold text-[16px] tracking-[0.4em] outline-none"
-                    />
+                  <div className="space-y-1.5">
+                    <div className="rounded-2xl border-2 border-brand-green/40 bg-brand-green/5 p-2.5 flex items-center gap-2 lm-pop">
+                      <ShieldCheck className="w-5 h-5 text-brand-green shrink-0" />
+                      <input
+                        value={otp}
+                        onChange={(e) => setOtp(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && submit()}
+                        placeholder="6-digit OTP"
+                        inputMode="numeric"
+                        maxLength={8}
+                        autoComplete="one-time-code"
+                        className="min-w-0 flex-1 bg-transparent font-bold text-[16px] tracking-[0.4em] outline-none"
+                      />
+                    </div>
+                    {/* Demo-mode hint: shows under the OTP input only when the
+                        backend returned a dev_otp (i.e. OTP_STUB_MODE=true on
+                        the server). The input is auto-filled above, so the user
+                        just needs to press submit. */}
+                    {otp && otp.length >= 4 && (
+                      <p className="text-[10.5px] font-bold text-brand-green/80 px-1">
+                        Demo mode: OTP auto-filled — just press the button below.
+                      </p>
+                    )}
                   </div>
                 )}
               </>
