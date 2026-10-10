@@ -17,10 +17,12 @@ import Khata from "@/pages/merchant/Khata";
 import Demand from "@/pages/merchant/Demand";
 import Impact from "@/pages/merchant/Impact";
 import Orders from "@/pages/merchant/Orders";
+import Pro from "@/pages/merchant/Pro";
 import AdminPendingShops from "@/pages/admin/PendingShops";
 import Login from "@/pages/Login";
 import Onboarding from "@/pages/Onboarding";
 import NotFound from "@/pages/NotFound";
+import VerifyEmail from "@/pages/VerifyEmail";
 
 export function useRole() {
   return useOutletContext<{ role: "customer" | "shopkeeper" | "admin" }>();
@@ -46,6 +48,7 @@ export default function App() {
     <LocationProvider>
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/verify-email" element={<VerifyEmail />} />
         <Route path="/onboarding" element={<Onboarding />} />
         <Route element={<AppShell />}>
           <Route path="/" element={<RoleHome />} />
@@ -61,6 +64,7 @@ export default function App() {
           <Route path="/merchant/demand" element={<Demand />} />
           <Route path="/merchant/impact" element={<Impact />} />
           <Route path="/merchant/orders" element={<Orders />} />
+          <Route path="/merchant/pro" element={<Pro />} />
           <Route path="/admin/shops/pending" element={<AdminPendingShops />} />
         </Route>
         <Route path="*" element={<NotFound />} />

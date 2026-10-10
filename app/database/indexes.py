@@ -121,6 +121,18 @@ async def create_indexes() -> None:
         await m.orders().create_index([("request_id", ASCENDING)], unique=True)
         await m.orders().create_index([("customer_id", ASCENDING), ("created_at", DESCENDING)])
 
+        # Email verification tokens — sha256 hash is the lookup key (raw token
+        # never persisted). Unique to prevent duplicates. TTL on expires_at
+        # auto-cleans expired tokens. user_id index supports "delete prior
+        # tokens for this user" on re-issue (one outstanding at a time).
+        await m.email_verification_tokens().create_index(
+            [("token_hash", ASCENDING)], unique=True,
+        )
+        await m.email_verification_tokens().create_index([("user_id", ASCENDING)])
+        await m.email_verification_tokens().create_index(
+            [("expires_at", ASCENDING)], expireAfterSeconds=0,
+        )
+
         logger.info("MongoDB indexes ensured (including 2dsphere geospatial indexes)")
     except PyMongoError as exc:
         logger.error("Index creation failed: %s", exc)

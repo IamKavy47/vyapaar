@@ -102,7 +102,12 @@ export interface WebUser {
   telegram_user_id?: number | null;
   is_verified: boolean;
   phone_verified?: boolean;
+  email_verified?: boolean;
+  email_verified_at?: string | null;
   trusted_contact_phone?: string | null;
+  is_pro?: boolean;
+  pro_expires_at?: string | null;
+  pro_trial_used?: boolean;
   created_at?: string;
 }
 
@@ -427,6 +432,91 @@ export interface ShopOrder {
   createdAt?: string | null;
 }
 
+/* ------------------------------------------------------------- Pro tier types */
+
+export interface ProStatus {
+  isPro: boolean;
+  proExpiresAt: string | null;
+  trialUsed: boolean;
+  pricePaise: number;
+  priceDisplay: string;
+  trialDays: number;
+}
+
+export interface NearbyHotProduct extends UniqueRequestedProduct {}
+
+export interface RevenueTrendPoint {
+  date: string;       // YYYY-MM-DD
+  revenue: number;    // in rupees
+  orders: number;
+}
+
+export interface SalesAnalytics {
+  revenueTrend: RevenueTrendPoint[];
+  totalRevenue: number;
+  totalOrders: number;
+  averageOrderValue: number;
+  topSellers: Array<{
+    product: string;
+    revenue: number;
+    orders: number;
+    avgPrice: number;
+  }>;
+  slowMovers: Array<{
+    product: string;
+    revenue: number;
+    orders: number;
+    avgPrice: number;
+  }>;
+  onlineVsCash: { online: number; cash: number };
+  days: number;
+}
+
+export interface PricingSuggestion {
+  product: string;
+  yourPrice: number | null;
+  medianMarketPrice: number;
+  minMarketPrice: number;
+  maxMarketPrice: number;
+  sampleSize: number;
+  recommendedPrice: number;
+  recommendation: "lower" | "raise" | "hold" | "set";
+  reason: string;
+}
+
+export interface SlowMoverAlert {
+  product: string;
+  lastRestockedAt: string;
+  daysSinceRestock: number;
+  demand7d: number;
+  demandPrev7d: number;
+  demandRatio: number;
+  recommendedAction: "restock" | "investigate";
+  reason: string;
+}
+
+export interface FestivalStockUpItem {
+  product: string;
+  category: string;
+  recommendedQuantity: number;
+  reason: string;
+  alreadyInInventory: boolean;
+  categoryAffinity: number;
+}
+
+export interface FestivalReadiness {
+  nextFestival: {
+    name: string;
+    date: string;
+    daysUntil: number;
+    note: string;
+  } | null;
+  stockUp: FestivalStockUpItem[];
+  shopCategory?: string | null;
+  lookaheadDays?: number;
+  reason?: string;
+}
+
 export interface KhataEntry {
   id: string;
   customerName: string;
@@ -506,8 +596,15 @@ export const api = {
         role: "customer" | "shopkeeper";
         otp: string;
       },
-      { user: WebUser }
+      { user: WebUser; verificationEmailSent?: boolean }
     >((body) => apiFetch("/auth/register", { method: "POST", body })),
+    verifyEmail: M<{ token: string }, { ok: boolean; user: WebUser; email: string }>(
+      (body) => apiFetch("/auth/verify-email", { method: "POST", body }),
+    ),
+    resendVerification: M<
+      { email: string },
+      { ok: boolean; sent: boolean; reason: string }
+    >((body) => apiFetch("/auth/resend-verification", { method: "POST", body })),
     logout: M<void, { ok: boolean }>(() =>
       apiFetch("/auth/logout", { method: "POST" }),
     ),
@@ -754,6 +851,49 @@ export const api = {
     markOrderPaid: M<{ orderId: string }, ShopOrder>((body) =>
       apiFetch(`/merchant/orders/${body.orderId}/mark-paid`, { method: "POST" }),
     ),
+    // ── Pro tier (₹299/month, 14-day free trial) ──
+    proStatus: Q<void, ProStatus>("merchant.proStatus", () =>
+      apiFetch("/merchant/pro/status"),
+    ),
+    subscribe: M<void, ProStatus>(() =>
+      apiFetch("/merchant/subscribe", { method: "POST" }),
+    ),
+    nearbyHotProducts: Q<
+      { days?: number; limit?: number },
+      {
+        products: NearbyHotProduct[];
+        radiusMeters: number;
+        days: number;
+        isDemoData: boolean;
+        reason?: string;
+      }
+    >("merchant.pro.hot", (input) =>
+      apiFetch(`/merchant/pro/nearby-hot-products${qs(input ?? {})}`),
+    ),
+    salesAnalytics: Q<
+      { days?: number },
+      SalesAnalytics
+    >("merchant.pro.sales", (input) =>
+      apiFetch(`/merchant/pro/sales-analytics${qs(input ?? {})}`),
+    ),
+    pricingSuggestions: Q<
+      { limit?: number },
+      { suggestions: PricingSuggestion[]; sampleSize: number }
+    >("merchant.pro.pricing", (input) =>
+      apiFetch(`/merchant/pro/pricing-suggestions${qs(input ?? {})}`),
+    ),
+    slowMoverAlerts: Q<
+      void,
+      {
+        alerts: SlowMoverAlert[];
+        thresholdDays: number;
+        demandRatioThreshold: number;
+      }
+    >("merchant.pro.slowMover", () => apiFetch("/merchant/pro/slow-mover-alerts")),
+    festivalReadiness: Q<void, FestivalReadiness>(
+      "merchant.pro.festival",
+      () => apiFetch("/merchant/pro/festival-readiness"),
+    ),
     opportunities: Q<
       { days?: number; limit?: number },
       {
@@ -837,6 +977,12 @@ export const api = {
         impact: { invalidate: byKey("merchant.impact") },
         conversations: { invalidate: byKey("merchant.conversations") },
         myShop: { invalidate: byKey("merchant.myShop") },
+        proStatus: { invalidate: byKey("merchant.proStatus") },
+        proHot: { invalidate: byKey("merchant.pro.hot") },
+        proSales: { invalidate: byKey("merchant.pro.sales") },
+        proPricing: { invalidate: byKey("merchant.pro.pricing") },
+        proSlowMover: { invalidate: byKey("merchant.pro.slowMover") },
+        proFestival: { invalidate: byKey("merchant.pro.festival") },
       },
       admin: { pendingShops: { invalidate: byKey("admin.pendingShops") } },
       request: {
