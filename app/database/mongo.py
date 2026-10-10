@@ -196,3 +196,10 @@ def orders() -> AsyncIOMotorCollection:
     """Customer orders — one per checkout. Tracks payment method (online/cash)
     + status (pending/paid) so the shopkeeper can mark cash orders as paid."""
     return collection("orders")
+
+
+def email_verification_tokens() -> AsyncIOMotorCollection:
+    """Email verification tokens — single-use, hashed-at-rest (sha256), 24h TTL.
+    Stores {user_id, email, token_hash, created_at, expires_at, consumed_at}.
+    Raw tokens never touch the DB — only the user sees them via the email link."""
+    return collection("email_verification_tokens")

@@ -104,6 +104,25 @@ class Settings(BaseSettings):
     # bucket so individual customer locations are never exposed to merchants.
     HEATMAP_BUCKET_METERS: int = 300
 
+    # ---------------- Pro subscription (Shopkeeper SaaS, ₹299/month) ----------------
+    # Pro unlocks the 6 analytics benefits on the merchant Pro Dashboard:
+    # nearby hot products, demand heatmap, sales analytics, smart pricing,
+    # slow-mover alerts, festival readiness.
+    # For the hackathon demo, /merchant/subscribe grants a free 14-day trial
+    # with no real payment. In production, this is wired to Razorpay the same
+    # way the customer checkout orders are.
+    PRO_SUBSCRIPTION_PRICE_PAISE: int = 29900   # ₹299 in paise
+    PRO_SUBSCRIPTION_DURATION_DAYS: int = 30
+    PRO_TRIAL_DURATION_DAYS: int = 14
+    # Slow-mover alert: flag an inventory item if it hasn't been restocked
+    # in this many days AND demand for the same product is up by the ratio
+    # below (vs the previous window of equal length).
+    PRO_SLOW_MOVER_THRESHOLD_DAYS: int = 14
+    PRO_SLOW_MOVER_DEMAND_RATIO_THRESHOLD: float = 1.30  # +30% demand
+    # Festival readiness: how many days ahead of an upcoming festival to
+    # start surfacing stock-up recommendations. 21 days = 3 weeks prep.
+    PRO_FESTIVAL_LOOKAHEAD_DAYS: int = 21
+
     # ---------------- Phone verification (anti-scam / anti-impersonation) ----------------
     # OTP is mandatory for both customers and shopkeepers before any action.
     # In stub mode the OTP is logged to stdout AND returned in the API response
@@ -202,6 +221,22 @@ class Settings(BaseSettings):
     SMTP_USE_TLS: bool = True
     ENABLE_SCHEDULED_REPORTS: bool = False
     DEMAND_REPORT_HOUR: int = 20
+
+    # ---------------- Email verification ----------------
+    # Link-based email verification — single-use, hashed-at-rest, expiring tokens.
+    # Tokens are sha256-hashed and stored in the email_verification_tokens
+    # collection with a TTL index. The raw token only ever appears in the
+    # verification email link the user receives.
+    # TTL: 24 hours — long enough to find the email, short enough to self-expire.
+    EMAIL_VERIFICATION_TOKEN_TTL_HOURS: int = 24
+    # If True, login is blocked until the user has clicked their verification link.
+    # Defaults to False for the hackathon demo (no SMTP friction needed to demo);
+    # flip to True in production for real security.
+    EMAIL_VERIFICATION_REQUIRED: bool = False
+    # The frontend app's base URL — verification links point here, not the
+    # backend. Defaults to PUBLIC_BASE_URL for the monolith deployment (where
+    # the FastAPI app serves the React build at /).
+    WEB_APP_BASE_URL: str = ""
 
     @field_validator("PRIMARY_LLM_PROVIDER", "FALLBACK_LLM_PROVIDER", "TERTIARY_LLM_PROVIDER")
     @classmethod

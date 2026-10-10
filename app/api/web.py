@@ -44,10 +44,12 @@ from app.models.shop import CATEGORY_AFFINITY, category_label, normalize_categor
 from app.models.user import UserRole, utcnow
 from app.schemas.intent import ProductIntent
 from app.services import (
-    auth_service, demand_engine, demo_service, inventory_service,
-    khata_service, merchant_matching, notification_service, opportunity_service,
-    product_image_service, search_service, trust_service,
+    analytics_service, auth_service, demand_engine, demo_service,
+    email_service, inventory_service, khata_service, merchant_matching,
+    notification_service, opportunity_service, product_image_service,
+    search_service, subscription_service, trust_service,
 )
+from app.services import email_verification_service as email_verif
 from app.services.auth_service import AuthError, OTPError
 from app.services import chat_service as chat_service_mod
 from app.services.chat_service import ChatError
@@ -282,6 +284,24 @@ async def require_my_verified_shop(user: dict = Depends(require_verified_user)) 
     return shop
 
 
+async def require_pro_shop(shop: dict = Depends(require_my_verified_shop)) -> dict:
+    """Gate Pro-only endpoints. The shopkeeper must have an active Pro
+    subscription (granted via /merchant/subscribe — 14-day trial for the
+    hackathon demo, paid 30-day period in production).
+
+    Returns the shop dict on success, raises 402 (Payment Required) with a
+    clear "Pro subscription required" message otherwise so the frontend can
+    show the Subscribe CTA.
+    """
+    user = await m.users().find_one({"_id": shop["user_id"]})
+    if not subscription_service.is_pro(user):
+        raise HTTPException(
+            status_code=402,
+            detail="Yeh feature Pro subscription ke saath hai. ₹299/month — 14-din ka free trial shuru karein.",
+        )
+    return shop
+
+
 async def require_admin(request: Request) -> dict:
     user = await current_web_user(request)
     if not user:
@@ -321,6 +341,15 @@ class VerifyOtpBody(BaseModel):
     code: str = Field(min_length=4, max_length=10)
 
 
+class VerifyEmailBody(BaseModel):
+    token: str = Field(min_length=16, max_length=200,
+                      description="Raw verification token from the email link.")
+
+
+class ResendVerificationBody(BaseModel):
+    email: str = Field(min_length=5, max_length=320)
+
+
 @router.post("/auth/send-otp")
 async def web_send_otp(body: SendOtpBody):
     """Send a 6-digit OTP to the given phone number.
@@ -358,6 +387,10 @@ async def web_register(body: RegisterBody, request: Request):
     code, then submits the full register body including the OTP. The OTP is
     consumed (one-shot) and the new account is created with
     ``phone_verified=True`` so the user can act immediately after login.
+
+    Email verification: a one-time link is emailed to the user. If
+    ``EMAIL_VERIFICATION_REQUIRED`` is True, login is blocked until they
+    click the link. Defaults to False (hackathon demo) — flip in production.
     """
     if not check_auth_rate_limit(request):
         _error(429, "Too many attempts. Please wait a minute and try again.")
@@ -383,7 +416,26 @@ async def web_register(body: RegisterBody, request: Request):
             "MongoDB is unavailable during web registration.",
             operation="web.register", cause=exc,
         ) from exc
-    response = JSONResponse(jsonable_encoder({"user": auth_service.to_public(user)}))
+    # ── Email verification ── Issue a one-time token + send the link via SMTP.
+    # Failures here are non-fatal — the user can still log in if
+    # EMAIL_VERIFICATION_REQUIRED is False (the default for the hackathon).
+    try:
+        raw_token = await email_verif.issue_token(
+            user_id=user["_id"], email=user["email"],
+        )
+        link = email_verif.build_verification_link(raw_token)
+        await email_service.send_verification_email(
+            user["email"], user.get("full_name", ""), link,
+        )
+        # Surface this to the React app so it can show a "check your email"
+        # banner — without leaking the token (the link is in the email).
+        user["verification_email_sent"] = email_service.is_enabled()
+    except Exception as exc:
+        logger.warning("email verification send failed | user=%s err=%s",
+                        user.get("_id"), exc.__class__.__name__)
+        user["verification_email_sent"] = False
+    response = JSONResponse(jsonable_encoder({"user": auth_service.to_public(user),
+                                               "verificationEmailSent": user.get("verification_email_sent", False)}))
     set_session_cookie(response, session_id)
     return response
 
@@ -394,6 +446,20 @@ async def web_login(body: LoginBody, request: Request):
         _error(429, "Too many attempts. Please wait a minute and try again.")
     try:
         user = await auth_service.authenticate(body.email, body.password)
+        # ── Email verification enforcement ── If EMAIL_VERIFICATION_REQUIRED
+        # is True, block login for unverified emails. Returns 403 with a
+        # clear message + the user_id so the frontend can call
+        # /auth/resend-verification without making the user type their email
+        # again. The session is NOT created — so even if an attacker got
+        # past the gate they wouldn't get a session.
+        if settings.EMAIL_VERIFICATION_REQUIRED and not email_verif.is_email_verified(user):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Please verify your email before logging in. "
+                    "Check your inbox for the verification link."
+                ),
+            )
         session_id = await auth_service.create_session(user)
     except AuthError as exc:
         _error(401, str(exc))
@@ -405,6 +471,74 @@ async def web_login(body: LoginBody, request: Request):
     response = JSONResponse(jsonable_encoder({"user": auth_service.to_public(user)}))
     set_session_cookie(response, session_id)
     return response
+
+
+@router.post("/auth/verify-email")
+async def web_verify_email(body: VerifyEmailBody):
+    """Verify an email using the one-time token from the verification link.
+
+    Single-use semantics — once a token has been used (or expired), it
+    can't be used again. The user must request a fresh link via
+    /auth/resend-verification.
+
+    Returns 200 + the user's public profile on success (so the frontend
+    can immediately log them in by calling /auth/login next, or by
+    issuing a session — we deliberately DON'T auto-issue a session here
+    so the verify-email link click itself doesn't grant access; the user
+    must still type their password to log in).
+    """
+    doc = await email_verif.verify_token(body.token)
+    if not doc:
+        _error(400, "Yeh verification link invalid hai. Please request a fresh link.")
+    if doc.get("expired"):
+        _error(410, "Yeh verification link expire ho gaya hai. Please request a fresh link.")
+    if doc.get("consumed"):
+        _error(410, "Yeh verification link pehle hi use ho chuka hai. Please log in.")
+    user_id = doc["user_id"]
+    # Mark the user verified + delete the token (single-use).
+    await email_verif.mark_verified(user_id=user_id)
+    user = await auth_service.get_user_by_id(user_id)
+    if not user:
+        _error(404, "User account not found.")
+    return {
+        "ok": True,
+        "user": auth_service.to_public(user),
+        "email": user.get("email"),
+    }
+
+
+@router.post("/auth/resend-verification")
+async def web_resend_verification(body: ResendVerificationBody, request: Request):
+    """Resend the email verification link to the given email.
+
+    Rate-limited via the existing auth_limiter (same one used for /auth/login
+    and /auth/send-otp). Returns 200 even if the email isn't registered —
+    we don't want to leak which emails exist. The actual email is only sent
+    if the user exists AND is not yet verified.
+    """
+    if not check_auth_rate_limit(request):
+        _error(429, "Too many attempts. Please wait a minute and try again.")
+    user = await m.users().find_one({"email": body.email.strip().lower()})
+    if not user:
+        # Don't leak which emails are registered. Return success.
+        return {"ok": True, "sent": False, "reason": "If this email is registered and unverified, a new link has been sent."}
+    if email_verif.is_email_verified(user):
+        return {"ok": True, "sent": False, "reason": "This email is already verified. Please log in."}
+    try:
+        raw_token = await email_verif.issue_token(
+            user_id=user["_id"], email=user["email"],
+        )
+        link = email_verif.build_verification_link(raw_token)
+        sent = await email_service.send_verification_email(
+            user["email"], user.get("full_name", ""), link,
+        )
+        return {"ok": True, "sent": sent,
+                "reason": "Verification link sent." if sent
+                          else "SMTP is not configured — token was issued but no email was sent."}
+    except Exception as exc:
+        logger.warning("resend verification failed | email=%s err=%s",
+                        body.email, exc.__class__.__name__)
+        _error(500, "Could not send verification email. Please try again.")
 
 
 @router.post("/auth/logout")
@@ -2351,3 +2485,120 @@ async def web_mark_order_paid(
         return order_service.order_public(result)
     except OrderError as exc:
         _error(400, str(exc))
+
+
+# ----------------------------------------------------------------- Pro tier
+# Pro subscription (Shopkeeper SaaS, ₹299/month). 14-day free trial for the
+# hackathon demo (no real payment); paid 30-day period in production (wired to
+# Razorpay the same way the customer checkout orders are). Pro unlocks 6
+# analytics-driven benefits on the Pro Dashboard:
+#   1. Nearby hot products
+#   2. Demand heatmap
+#   3. Sales analytics (revenue trends, top sellers, slow movers)
+#   4. Smart pricing suggestions
+#   5. Slow-mover alerts
+#   6. Festival readiness
+# Benefits 1 + 2 are gated by `require_pro_shop` on their existing endpoints
+# (heatmap, opportunities, impact). Benefits 3-6 are new endpoints here.
+
+@router.get("/merchant/pro/status")
+async def web_pro_status(user: dict = Depends(require_user)):
+    """Pro subscription status — used by the frontend to decide whether to
+    show the Subscribe CTA or the full Pro Dashboard."""
+    return await subscription_service.get_pro_status(user["_id"])
+
+
+@router.post("/merchant/subscribe")
+async def web_subscribe(user: dict = Depends(require_verified_user)):
+    """Start a 14-day free Pro trial. Idempotent for first-time users only —
+    a user who has used their trial must pay ₹299/month (production wire to
+    Razorpay; for the hackathon demo the trial is the demo path).
+    """
+    try:
+        await subscription_service.grant_trial(user["_id"])
+        return await subscription_service.get_pro_status(user["_id"])
+    except ValueError as exc:
+        _error(400, str(exc))
+
+
+@router.post("/merchant/subscribe/paid")
+async def web_subscribe_paid(
+    user: dict = Depends(require_verified_user),
+    days: int = Query(30, ge=1, le=365),
+):
+    """Grant a paid Pro subscription. Used by admins to manually grant Pro
+    (or in production, called after Razorpay payment verification)."""
+    await subscription_service.grant_pro(user["_id"], days=days)
+    return await subscription_service.get_pro_status(user["_id"])
+
+
+@router.get("/merchant/pro/sales-analytics")
+async def web_pro_sales_analytics(
+    shop: dict = Depends(require_pro_shop),
+    days: int = Query(30, ge=1, le=365),
+):
+    """Pro benefit #3 — sales analytics: revenue trend, top sellers, slow
+    movers, online-vs-cash breakdown. Reads from the orders collection
+    (PAID orders only)."""
+    data = await analytics_service.sales_analytics(shop_id=shop["_id"], days=days)
+    return data
+
+
+@router.get("/merchant/pro/pricing-suggestions")
+async def web_pro_pricing_suggestions(
+    shop: dict = Depends(require_pro_shop),
+    limit: int = Query(8, ge=1, le=20),
+):
+    """Pro benefit #4 — smart pricing suggestions: for each inventory item,
+    computes a recommended price based on median of nearby competitor offers
+    (demand_events with response='available' + non-null price)."""
+    data = await analytics_service.smart_pricing_suggestions(
+        shop_id=shop["_id"], limit=limit,
+    )
+    return {"suggestions": data, "sampleSize": len(data)}
+
+
+@router.get("/merchant/pro/slow-mover-alerts")
+async def web_pro_slow_mover_alerts(shop: dict = Depends(require_pro_shop)):
+    """Pro benefit #5 — slow-mover alerts: inventory items not restocked in
+    14+ days AND with nearby demand up ≥30% (last 7d vs prev 7d)."""
+    data = await analytics_service.slow_mover_alerts(shop_id=shop["_id"])
+    return {"alerts": data, "thresholdDays": settings.PRO_SLOW_MOVER_THRESHOLD_DAYS,
+            "demandRatioThreshold": settings.PRO_SLOW_MOVER_DEMAND_RATIO_THRESHOLD}
+
+
+@router.get("/merchant/pro/festival-readiness")
+async def web_pro_festival_readiness(shop: dict = Depends(require_pro_shop)):
+    """Pro benefit #6 — festival readiness: next upcoming Indian festival
+    within 21 days, with stock-up recommendations filtered by the shop's
+    category affinity."""
+    data = await analytics_service.festival_readiness(shop_id=shop["_id"])
+    return data
+
+
+@router.get("/merchant/pro/nearby-hot-products")
+async def web_pro_nearby_hot_products(
+    shop: dict = Depends(require_pro_shop),
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(10, ge=1, le=30),
+):
+    """Pro benefit #1 — nearby hot products: top-N most-requested SKUs in
+    this shopkeeper's pin-code. Wraps the existing
+    demand_engine.top_unique_requested_products function but is Pro-gated
+    so the existing /merchant/demand endpoint can stay ungated for the
+    honest-stats dashboard."""
+    coords = from_geojson_point(shop.get("location"))
+    if not coords:
+        return {"products": [], "reason": "Apni shop ki location set karein."}
+    lat, lng = coords
+    products = await demand_engine.top_unique_requested_products(
+        latitude=lat, longitude=lng,
+        radius_meters=settings.OPPORTUNITY_RADIUS_METERS,
+        days=days, limit=limit,
+    )
+    return {
+        "products": products,
+        "radiusMeters": settings.OPPORTUNITY_RADIUS_METERS,
+        "days": days,
+        "isDemoData": bool(settings.DEMO_MODE),
+    }

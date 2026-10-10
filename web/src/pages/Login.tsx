@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { ShoppingBasket, Mic, Zap, MapPin, Eye, EyeOff, Store, ShoppingBag, Phone, ShieldCheck, Wrench } from "lucide-react";
+import { ShoppingBasket, Mic, Zap, MapPin, Eye, EyeOff, Store, ShoppingBag, Phone, ShieldCheck, Wrench, MailCheck, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
 import { api, ApiError } from "@/lib/api";
@@ -31,9 +31,20 @@ export default function Login() {
   const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [showEmailVerifyBanner, setShowEmailVerifyBanner] = useState(false);
 
   const login = api.auth.login.useMutation();
   const register = api.auth.register.useMutation();
+  const resendVerification = api.auth.resendVerification.useMutation({
+    onSuccess: (data) => {
+      if (data.sent) {
+        toast.success(`Naya verification link bhej diya ${email.trim()} par. Spam folder bhi check karein.`);
+      } else {
+        toast(data.reason, { duration: 6000 });
+      }
+    },
+    onError: (e) => toast.error(e instanceof ApiError ? e.message : "Resend fail ho gaya."),
+  });
   const sendOtp = api.auth.sendOtp.useMutation({
     onSuccess: (data) => {
       setOtpSent(true);
@@ -93,7 +104,7 @@ export default function Login() {
         // "professional" is a UI-only role — backend stores it as
         // "shopkeeper" (the Onboarding page then sets shop_type=service).
         const backendRole = role === "professional" ? "shopkeeper" : role;
-        await register.mutateAsync({
+        const regRes = await register.mutateAsync({
           fullName: fullName.trim(),
           email: email.trim(),
           phone: phone.trim(),
@@ -101,6 +112,11 @@ export default function Login() {
           role: backendRole as "customer" | "shopkeeper",
           otp: otp.trim(),
         });
+        // If a verification email was sent, surface a toast so the user knows
+        // to check their inbox (the email might land in spam/promotions).
+        if (regRes.verificationEmailSent) {
+          toast.success(`Account ban gaya! Verification link bhej diya ${email.trim()} par.`);
+        }
       }
       await refresh();
       toast.success(mode === "login" ? "Namaste! Wapas aa gaye." : "Account ban gaya! Phone verified ✓");
@@ -110,7 +126,16 @@ export default function Login() {
         : role === "shopkeeper" ? "?type=shop" : "";
       navigate(onboardingType ? `/onboarding${onboardingType}` : "/", { replace: true });
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Kuch gadbad ho gayi — phir try karo.");
+      // 403 = email verification required (only fires when
+      // EMAIL_VERIFICATION_REQUIRED=true in the backend). Show a clear
+      // banner with a "Resend verification email" CTA instead of the
+      // generic "incorrect email or password" toast.
+      if (e instanceof ApiError && e.status === 403) {
+        setShowEmailVerifyBanner(true);
+        toast.error('Pehle email verify karein. Niche "Resend verification email" button dabaiye.');
+      } else {
+        toast.error(e instanceof ApiError ? e.message : "Kuch gadbad ho gayi — phir try karo.");
+      }
     } finally {
       setBusy(false);
     }
@@ -274,6 +299,42 @@ export default function Login() {
           >
             {busy ? "Ek second…" : mode === "login" ? "Login →" : "Account banao →"}
           </button>
+
+          {/* ── Email-verification-required banner (only shows when
+              EMAIL_VERIFICATION_REQUIRED=true in the backend, which causes
+              login to return 403). Lets the user resend the verification
+              link without leaving the page. */}
+          {showEmailVerifyBanner && (
+            <div className="mt-4 rounded-2xl border-2 border-brand-yellow/50 bg-brand-yellow/10 p-4">
+              <div className="flex items-start gap-3">
+                <MailCheck className="w-5 h-5 text-brand-ink mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-extrabold text-[13px] text-brand-ink">
+                    Email verify karna zaroori hai
+                  </div>
+                  <p className="text-[11px] font-bold text-brand-ink/70 mt-0.5 leading-snug">
+                    Humne {email.trim()} par ek verification link bheja hai.
+                    Apna inbox (aur spam folder) check karein, link par click
+                    karein, phir login karein.
+                  </p>
+                  <button
+                    onClick={async () => {
+                      if (!email.trim()) {
+                        toast.error("Pehle email field bharo.");
+                        return;
+                      }
+                      await resendVerification.mutateAsync({ email: email.trim() });
+                    }}
+                    disabled={resendVerification.isPending}
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-full border-2 border-brand-ink bg-brand-yellow text-brand-ink text-[11.5px] font-extrabold px-3 py-1.5 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${resendVerification.isPending ? "animate-spin" : ""}`} strokeWidth={2.6} />
+                    {resendVerification.isPending ? "Bhej rahe hain…" : "Resend verification email"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <p className="mt-3 text-center text-[11px] font-bold text-brand-ink/50 leading-relaxed">
             Telegram se judna hai? Account ke baad

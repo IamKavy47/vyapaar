@@ -714,6 +714,66 @@ The system never claims a sale happened, never invents a price, and never labels
 
 ---
 
+## 18.5. Pro subscription — the monetisation layer (₹299/month)
+
+Vyapaar-Mitra monetises via a **single Shopkeeper SaaS tier — Pro** at ₹299/month
+with a 14-day free trial (no payment required for the hackathon demo; production
+wires to Razorpay the same way the customer checkout orders are).
+
+Pro unlocks **6 analytics-driven benefits** on the Pro Dashboard at
+`/merchant/pro`:
+
+| # | Benefit | What it does | Backend service |
+|---|---------|--------------|------------------|
+| 1 | **Nearby hot products** | Top-10 most-requested SKUs in your pin-code (last 7/30 days) | `demand_engine.top_unique_requested_products` |
+| 2 | **Demand heatmap** | Visual map of where customers are asking, ~300m buckets, privacy-safe | `demand_engine.demand_heatmap` |
+| 3 | **Sales analytics** | Daily revenue trend, top sellers, slow movers, online-vs-cash breakdown | `analytics_service.sales_analytics` |
+| 4 | **Smart pricing suggestions** | Recommended price vs. median competitor offers (40/60 blend) | `analytics_service.smart_pricing_suggestions` |
+| 5 | **Slow-mover alerts** | Inventory items not restocked in 14+ days AND demand +30% | `analytics_service.slow_mover_alerts` |
+| 6 | **Festival readiness** | Next upcoming Indian festival (6 in calendar), stock-up recommendations filtered by shop category | `analytics_service.festival_readiness` |
+
+### Why SaaS and not marketplace commission
+
+A commission model would create a perverse incentive — we'd earn more when
+shopkeepers pay more in fees. The SaaS model aligns us with shopkeeper growth:
+predictable MRR, no take-rate race-to-the-bottom, the shopkeeper who succeeds
+pays the same ₹299 as the one who's just getting started.
+
+### API endpoints (all Pro-gated by `require_pro_shop`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/merchant/pro/status` | Current Pro status (free) — used to show Subscribe CTA |
+| `POST` | `/merchant/subscribe` | Start 14-day free trial |
+| `POST` | `/merchant/subscribe/paid` | Grant paid 30-day Pro (admin / post-Razorpay) |
+| `GET` | `/merchant/pro/nearby-hot-products` | Pro benefit #1 |
+| `GET` | `/merchant/pro/sales-analytics` | Pro benefit #3 |
+| `GET` | `/merchant/pro/pricing-suggestions` | Pro benefit #4 |
+| `GET` | `/merchant/pro/slow-mover-alerts` | Pro benefit #5 |
+| `GET` | `/merchant/pro/festival-readiness` | Pro benefit #6 |
+
+Existing endpoints `/merchant/demand/opportunities`, `/merchant/demand/heatmap`,
+and `/merchant/demand/impact` continue to work without Pro (they form the honest
+demand dashboard). Pro gates only the dedicated analytics benefits — this keeps
+the demo flowing without breaking any existing screen.
+
+### Unit economics (per-shop, Year-1 stabilised assumptions)
+
+- **ARPU**: ₹254/month (assumes 40% Free / 60% Pro mix at ₹299)
+- **CAC**: ₹800 (offline field sales, local partner agent)
+- **Payback**: 3.1 months
+- **LTV (24-month)**: ₹6,106 → LTV/CAC = 7.6×
+- **Gross margin**: ~85% (software-only — no inventory, no logistics)
+
+### See also
+
+- Business model PDF: `Vyapaar-Mitra-Business-Model.pdf` — full 3-year forecast
+  + use-of-funds breakdown for the ₹15 lakh seed ask.
+- Section 19 (Future roadmap) — the multi-tier expansion is listed as future scope;
+  the current implementation ships the single Pro tier only.
+
+---
+
 ## 19. Future roadmap
 
 - WhatsApp Business interface reusing the same service layer (10× distribution vs Telegram in India)
