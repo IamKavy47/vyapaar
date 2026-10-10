@@ -361,11 +361,51 @@ async def send_otp(phone: str) -> Dict:
     — the dev_otp field lets the hackathon UI paste the code from the network
     response without an SMS gateway. In production, dev_otp is None and the
     real SMS gateway (MSG91 / Twilio) carries the code.
+
+    Twilio Verify path (preferred for India — DLT-compliant): when
+    ``SMS_GATEWAY == "twilio"`` AND ``TWILIO_VERIFY_SERVICE_SID`` is set,
+    Twilio generates + sends + stores the OTP itself; we don't store the
+    code locally. Verify handles rate limiting (max 5 attempts), 10-min
+    expiry, and DLT compliance for Indian numbers. 200 verifications/month
+    are free on the Starter plan.
     """
     from datetime import timedelta
+    import asyncio
     phone_norm = _normalise_phone(phone)
     if not phone_norm or len(phone_norm) < 12:
         raise OTPError("Phone number looks invalid — please enter a 10-digit Indian mobile.")
+
+    # ── Twilio Verify path (preferred for India) ──
+    # Twilio generates + sends + stores the OTP. We just record the audit
+    # event locally (no code_hash) so the verify_otp path can detect whether
+    # a Verify verification is in-flight for this phone.
+    if (settings.SMS_GATEWAY == "twilio"
+            and settings.TWILIO_VERIFY_SERVICE_SID
+            and not settings.OTP_STUB_MODE):
+        if not (settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN):
+            logger.error("Twilio Verify requested but creds missing — "
+                         "need TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN | to=%s", phone_norm)
+            raise OTPError("SMS gateway not configured. Contact support.")
+        try:
+            await asyncio.to_thread(_twilio_verify_start, phone_norm)
+        except OTPError:
+            raise
+        except Exception as exc:
+            logger.error("Twilio Verify start failed | to=%s | %s", phone_norm, exc)
+            raise OTPError("Could not send OTP. Please try again in a minute.") from exc
+        # Local audit row — no code_hash since Twilio owns the code.
+        now = utcnow()
+        await m.otp_codes().insert_one({
+            "phone": phone_norm,
+            "code_hash": None,  # Twilio owns the code; we just track in-flight.
+            "provider": "twilio_verify",
+            "created_at": now,
+            "expires_at": now + timedelta(minutes=10),  # Verify default
+            "used_at": None,
+            "attempts": 0,
+        })
+        return {"sent": True, "dev_otp": None, "phone": phone_norm,
+                "provider": "twilio_verify"}
 
     # Invalidate any prior unused OTPs for this phone before issuing a new one.
     await m.otp_codes().update_many(
@@ -428,13 +468,43 @@ async def consume_otp(phone: str, code: str) -> Tuple[bool, Dict]:
     Returns ``(True, record)`` on success. Caller can use ``record['phone']``
     for downstream account creation. Does NOT touch the user table —
     ``mark_phone_verified`` does that separately.
+
+    Twilio Verify path: when ``SMS_GATEWAY == "twilio"`` AND
+    ``TWILIO_VERIFY_SERVICE_SID`` is set, defers to Twilio's verification_checks
+    API. Twilio tracks attempts (max 5), expiry (10 min), and validates the
+    code itself — we don't compare any local hash.
     """
+    import asyncio
     phone_norm = _normalise_phone(phone)
     if not phone_norm:
         raise OTPError("Phone number is missing.")
     code = (code or "").strip()
     if not code or not code.isdigit() or len(code) != settings.OTP_LENGTH:
         raise OTPError(f"Code must be {settings.OTP_LENGTH} digits.")
+
+    # ── Twilio Verify Check path ──
+    if (settings.SMS_GATEWAY == "twilio"
+            and settings.TWILIO_VERIFY_SERVICE_SID
+            and not settings.OTP_STUB_MODE):
+        if not (settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN):
+            raise OTPError("SMS gateway not configured. Contact support.")
+        try:
+            result = await asyncio.to_thread(_twilio_verify_check, phone_norm, code)
+        except Exception as exc:
+            logger.error("Twilio Verify check failed | to=%s | %s", phone_norm, exc)
+            raise OTPError("Could not verify OTP. Please try again.") from exc
+        if result.get("status") == "approved":
+            # Mark any local audit row as used so it doesn't appear in-flight.
+            await m.otp_codes().update_many(
+                {"phone": phone_norm, "used_at": None,
+                 "provider": "twilio_verify"},
+                {"$set": {"used_at": utcnow()}},
+            )
+            return True, {"phone": phone_norm, "verify_sid": result.get("sid"),
+                          "provider": "twilio_verify"}
+        # status == 'pending' → wrong code. Twilio tracks attempts; after 5
+        # they auto-cancel the verification and the user must request a new one.
+        raise OTPError("Wrong code. Please check and try again.")
 
     now = utcnow()
     record = await m.otp_codes().find_one({
@@ -538,3 +608,48 @@ def _twilio_send(phone: str, text: str) -> None:
                      message.error_code, message.error_message, message.sid)
         raise RuntimeError(f"Twilio error {message.error_code}: {message.error_message}")
     logger.info("Twilio message sid=%s status=%s", message.sid, message.status)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Twilio Verify API helpers
+# ──────────────────────────────────────────────────────────────────────────────
+# Twilio Verify is the preferred OTP path for India — it handles DLT compliance,
+# generates + stores + validates the OTP itself, supports SMS/WhatsApp/voice
+# channels, and offers 200 free verifications/month on the Starter plan.
+# Used by send_otp / consume_otp when TWILIO_VERIFY_SERVICE_SID is set.
+
+
+def _twilio_verify_start(phone: str) -> Dict:
+    """Twilio Verify — kick off a verification (Twilio generates + sends the code).
+
+    Called via asyncio.to_thread by send_otp; not awaited directly.
+    """
+    from twilio.rest import Client
+    client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+    to_e164 = phone if phone.startswith("+") else f"+{phone}"
+    verification = client.verify.v2.services(
+        settings.TWILIO_VERIFY_SERVICE_SID
+    ).verifications.create(to=to_e164, channel="sms")
+    logger.info("Twilio Verify started | to=%s sid=%s status=%s",
+                to_e164, verification.sid, verification.status)
+    # surface any Twilio-reported error (e.g. trial-account restriction)
+    if verification.status == "canceled":
+        raise RuntimeError(f"Twilio Verify canceled: {getattr(verification, 'error_code', 'unknown')}")
+    return {"sid": verification.sid, "status": verification.status}
+
+
+def _twilio_verify_check(phone: str, code: str) -> Dict:
+    """Twilio Verify — validate a code entered by the user.
+
+    Called via asyncio.to_thread by consume_otp; not awaited directly.
+    Returns ``{"sid": ..., "status": "approved" | "pending"}``.
+    """
+    from twilio.rest import Client
+    client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+    to_e164 = phone if phone.startswith("+") else f"+{phone}"
+    check = client.verify.v2.services(
+        settings.TWILIO_VERIFY_SERVICE_SID
+    ).verification_checks.create(to=to_e164, code=code)
+    logger.info("Twilio Verify check | to=%s sid=%s status=%s",
+                to_e164, check.sid, check.status)
+    return {"sid": check.sid, "status": check.status}
