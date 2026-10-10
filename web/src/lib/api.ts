@@ -408,6 +408,25 @@ export interface PaymentStatus {
   message?: string;
 }
 
+export interface ShopOrder {
+  id: string;
+  requestId: string;
+  customerId: string;
+  shopId: string;
+  product: string;
+  price?: number | null;
+  quantity: number;
+  unit: string;
+  customerName?: string | null;
+  shopName?: string | null;
+  paymentMethod: "online" | "cash";
+  isService: boolean;
+  status: "pending" | "paid" | "cancelled";
+  razorpayPaymentId?: string | null;
+  paidAt?: string | null;
+  createdAt?: string | null;
+}
+
 export interface KhataEntry {
   id: string;
   customerName: string;
@@ -729,6 +748,12 @@ export const api = {
         days: number;
       }
     >("merchant.demand", (input) => apiFetch(`/merchant/demand${qs(input ?? {})}`)),
+    orders: Q<void, { orders: ShopOrder[] }>("merchant.orders", () =>
+      apiFetch("/merchant/orders"),
+    ),
+    markOrderPaid: M<{ orderId: string }, ShopOrder>((body) =>
+      apiFetch(`/merchant/orders/${body.orderId}/mark-paid`, { method: "POST" }),
+    ),
     opportunities: Q<
       { days?: number; limit?: number },
       {

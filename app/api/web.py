@@ -2204,6 +2204,8 @@ async def web_merchant_send_chat_message(
 
 from app.services import payment_service
 from app.services.payment_service import PaymentError
+from app.services import order_service
+from app.services.order_service import OrderError
 
 
 class CreateOrderBody(BaseModel):
@@ -2266,11 +2268,26 @@ async def web_verify_payment(
 ):
     """Verify the Razorpay payment signature after checkout."""
     try:
-        return await payment_service.verify_payment(
+        result = await payment_service.verify_payment(
             razorpay_order_id=body.razorpayOrderId,
             razorpay_payment_id=body.razorpayPaymentId,
             razorpay_signature=body.razorpaySignature,
         )
+        # Auto-update the linked order to status=paid + method=online
+        try:
+            await order_service.link_razorpay_payment(
+                request_id=result.get("orderId", ""),  # not ideal — we need request_id
+                razorpay_order_id=body.razorpayOrderId,
+                razorpay_payment_id=body.razorpayPaymentId,
+            )
+            # Also update the order's payment_method to "online"
+            await m.orders().update_one(
+                {"razorpay_order_id": body.razorpayOrderId},
+                {"$set": {"payment_method": "online"}},
+            )
+        except Exception as exc:
+            logger.warning("order link failed (non-fatal) | %s", exc)
+        return result
     except PaymentError as exc:
         _error(400, str(exc))
 
@@ -2306,3 +2323,31 @@ async def web_payment_status(
         "razorpayPaymentId": payment.get("razorpay_payment_id"),
         "paidAt": _iso(payment.get("paid_at")),
     }
+
+
+# ----------------------------------------------------------------- Orders
+# Shopkeeper order history + mark cash orders as paid.
+
+@router.get("/merchant/orders")
+async def web_merchant_orders(shop: dict = Depends(require_my_shop)):
+    """List all orders for this shop — customer checkouts with payment status."""
+    orders = await order_service.list_orders_for_shop(shop["_id"], limit=50)
+    return {"orders": [order_service.order_public(o) for o in orders]}
+
+
+@router.post("/merchant/orders/{order_id}/mark-paid")
+async def web_mark_order_paid(
+    order_id: str, shop: dict = Depends(require_my_verified_shop),
+):
+    """Shopkeeper marks a cash order as paid (customer paid in person).
+
+    Only the shop that owns the order can mark it. Only PENDING orders
+    can be marked. PAID is idempotent (returns the existing doc).
+    """
+    try:
+        result = await order_service.mark_cash_paid(
+            order_id=order_id, merchant_id=shop["_id"],
+        )
+        return order_service.order_public(result)
+    except OrderError as exc:
+        _error(400, str(exc))

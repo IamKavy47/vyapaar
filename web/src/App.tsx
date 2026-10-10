@@ -16,6 +16,7 @@ import Inventory from "@/pages/merchant/Inventory";
 import Khata from "@/pages/merchant/Khata";
 import Demand from "@/pages/merchant/Demand";
 import Impact from "@/pages/merchant/Impact";
+import Orders from "@/pages/merchant/Orders";
 import AdminPendingShops from "@/pages/admin/PendingShops";
 import Login from "@/pages/Login";
 import Onboarding from "@/pages/Onboarding";
@@ -59,6 +60,7 @@ export default function App() {
           <Route path="/merchant/khata" element={<Khata />} />
           <Route path="/merchant/demand" element={<Demand />} />
           <Route path="/merchant/impact" element={<Impact />} />
+          <Route path="/merchant/orders" element={<Orders />} />
           <Route path="/admin/shops/pending" element={<AdminPendingShops />} />
         </Route>
         <Route path="*" element={<NotFound />} />

@@ -479,6 +479,27 @@ async def select_offer(*, request_id: str, match_id, customer_id) -> Dict:
                 kind="shop_location",
             )
 
+    # Create an order for the shopkeeper's Orders tab — starts as PENDING
+    # with payment_method="cash" (the customer hasn't paid yet). If they
+    # pay online via Razorpay, the order is auto-updated to PAID via
+    # order_service.link_razorpay_payment. If they pay cash at the shop,
+    # the shopkeeper marks it paid via POST /merchant/orders/{id}/mark-paid.
+    try:
+        from app.services import order_service
+        await order_service.create_order_from_selection(
+            request_id=request_id, match_id=match["_id"],
+            customer_id=customer_id, shop_id=match["merchant_id"],
+            merchant_id=match["merchant_id"],
+            product=request.get("product") or "Item",
+            price=match.get("price"),
+            quantity=request.get("quantity", 1),
+            unit=request.get("unit", "piece"),
+            payment_method="cash",  # default — updated to "online" if Razorpay verify succeeds
+            is_service=(shop or {}).get("shop_type") == "service",
+        )
+    except Exception as exc:
+        logger.warning("order creation failed (non-fatal) | %s", exc)
+
     return {
         "ok": True,
         "selected_match_id": str(match["_id"]),

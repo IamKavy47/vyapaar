@@ -115,6 +115,12 @@ async def create_indexes() -> None:
         await m.payments().create_index([("request_id", ASCENDING)])
         await m.payments().create_index([("customer_id", ASCENDING), ("created_at", DESCENDING)])
 
+        # Orders — one per customer checkout. Shopkeeper sees these in their
+        # Orders tab.
+        await m.orders().create_index([("shop_id", ASCENDING), ("created_at", DESCENDING)])
+        await m.orders().create_index([("request_id", ASCENDING)], unique=True)
+        await m.orders().create_index([("customer_id", ASCENDING), ("created_at", DESCENDING)])
+
         logger.info("MongoDB indexes ensured (including 2dsphere geospatial indexes)")
     except PyMongoError as exc:
         logger.error("Index creation failed: %s", exc)

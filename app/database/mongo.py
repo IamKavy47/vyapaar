@@ -190,3 +190,9 @@ def payments() -> AsyncIOMotorCollection:
     """Razorpay payment records — one per customer checkout. Linked to the
     product_request + merchant_match for audit trail."""
     return collection("payments")
+
+
+def orders() -> AsyncIOMotorCollection:
+    """Customer orders — one per checkout. Tracks payment method (online/cash)
+    + status (pending/paid) so the shopkeeper can mark cash orders as paid."""
+    return collection("orders")
