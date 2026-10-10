@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     OTP_STUB_MODE: bool = True
     OTP_TTL_MINUTES: int = 5
     OTP_LENGTH: int = 6
+    # When OTP_STUB_MODE=true, the OTP is this fixed code (defaults to 123456).
+    # The frontend auto-fills the input + shows a "Demo OTP: 123456" banner so
+    # judges can just click through registration without typing. Flip
+    # OTP_STUB_MODE=false in production to use real Twilio / MSG91.
+    OTP_DEMO_CODE: str = "123456"
     # 6-digit numeric OTP, hashed at rest (sha256) like auth tokens.
     # Real SMS gateway stub — plug in MSG91 / Twilio here in production.
     SMS_GATEWAY: str = "stub"  # "stub" | "msg91" | "twilio"
