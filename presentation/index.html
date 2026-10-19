@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vyapaar-Mitra — Presentation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Manrope:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+  --brand-yellow: #FEE600;
+  --brand-green: #009146;
+  --brand-cream: #F5F1E4;
+  --brand-ink: #141313;
+  --brand-coral: #FF705D;
+  --brand-sky: #2BA0FF;
+  --muted: #8A8880;
+  --shadow-sticker: 4px 4px 0px var(--brand-ink);
+  --shadow-sticker-sm: 2px 2px 0px var(--brand-ink);
+  --font-display: 'Dela Gothic One', 'Manrope', sans-serif;
+  --font-body: 'Manrope', sans-serif;
+}
+
+.slide {
+  width: 1280px;
+  height: 720px;
+  overflow: hidden;
+  position: relative;
+  box-sizing: border-box;
+  font-family: var(--font-body);
+}
+
+/* sticker card */
+.sticker {
+  border: 2.5px solid var(--brand-ink);
+  border-radius: 20px;
+  box-shadow: var(--shadow-sticker);
+  padding: 20px 28px;
+  background: white;
+}
+.sticker-yellow { background: var(--brand-yellow); }
+.sticker-cream { background: var(--brand-cream); }
+.sticker-ink { background: var(--brand-ink); color: white; border-color: var(--brand-ink); }
+.sticker-green { background: var(--brand-green); color: white; }
+.sticker-coral { background: var(--brand-coral); color: white; }
+
+/* accent bar */
+.accent-bar {
+  height: 5px;
+  background: var(--brand-yellow);
+  border-radius: 3px;
+}
+
+/* page number */
+.page-num {
+  position: absolute;
+  bottom: 24px;
+  right: 32px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 700;
+}
+.footer-brand {
+  position: absolute;
+  bottom: 24px;
+  left: 32px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+/* tag pill */
+.tag {
+  display: inline-block;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+
+
+/* ─── Presentation viewer styles ─────────────────────────────────────── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0a0a0a;
+  font-family: var(--font-body);
+}
+
+#presentation {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.slide-frame {
+  width: 1280px;
+  height: 720px;
+  position: relative;
+  transform-origin: center center;
+  display: none;
+}
+
+.slide-frame.active {
+  display: block;
+}
+
+/* Scale to fit viewport */
+@media (max-width: 1280px) {
+  .slide-frame {
+    transform: scale(calc(100vw / 1280));
+  }
+}
+
+@media (max-width: 720px) {
+  .slide-frame {
+    transform: scale(calc(100vw / 1280));
+  }
+}
+
+/* Nav arrows */
+.nav-arrow {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.15);
+  border: 2px solid rgba(255,255,255,0.3);
+  color: white;
+  font-size: 24px;
+  cursor: pointer;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  backdrop-filter: blur(8px);
+}
+.nav-arrow:hover {
+  background: rgba(255,255,255,0.3);
+  border-color: rgba(255,255,255,0.6);
+}
+.nav-prev { left: 24px; }
+.nav-next { right: 24px; }
+.nav-arrow:disabled {
+  opacity: 0.2;
+  cursor: default;
+}
+
+/* Counter */
+.slide-counter {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(255,255,255,0.5);
+  font-size: 14px;
+  font-weight: 700;
+  z-index: 100;
+  font-family: var(--font-body);
+  background: rgba(0,0,0,0.4);
+  padding: 6px 16px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+}
+
+/* Progress bar */
+.progress-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 4px;
+  background: var(--brand-yellow);
+  transition: width 0.3s ease;
+  z-index: 100;
+}
+
+/* Fullscreen button */
+.fs-btn {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.15);
+  border: 2px solid rgba(255,255,255,0.3);
+  color: white;
+  cursor: pointer;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  backdrop-filter: blur(8px);
+}
+.fs-btn:hover {
+  background: rgba(255,255,255,0.3);
+}
+</style>
+</head>
+<body>
+
+<div class="progress-bar" id="progress"></div>
+
+<div id="presentation">
+  <div class="slide-frame active" data-slide="1">
+    <div class="slide" style="background: var(--brand-cream);">
+
+
+<div style="padding: 80px 80px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+  <div class="tag sticker sticker-yellow" style="transform: rotate(-2deg); margin-bottom: 32px;">MU ANANT 1.0 · Team ANT011</div>
+  <h1 style="font-family: var(--font-display); font-size: 72px; color: var(--brand-ink); margin: 0 0 16px; line-height: 1.1;">VYAPAAR<span style="color: var(--brand-green);">-</span><span style="color: var(--brand-coral);">MITRA</span></h1>
+  <div style="width: 80px; height: 5px; background: var(--brand-yellow); border-radius: 3px; margin: 12px 0 24px;"></div>
+  <p style="font-size: 28px; font-weight: 700; color: var(--brand-ink); margin: 0 0 8px;">Kuch Karke Dikhana Hai</p>
+  <p style="font-size: 18px; color: var(--muted); margin: 0;">The demand layer for India's $850B neighborhood retail</p>
+  <div style="margin-top: 40px; display: flex; gap: 12px;">
+    <span style="padding: 8px 16px; border: 2px solid var(--brand-ink); border-radius: 999px; font-size: 14px; font-weight: 700; background: white; box-shadow: var(--shadow-sticker-sm);">AI Voice Search</span>
+    <span style="padding: 8px 16px; border: 2px solid var(--brand-ink); border-radius: 999px; font-size: 14px; font-weight: 700; background: var(--brand-yellow); box-shadow: var(--shadow-sticker-sm);">Zero-Inventory Onboarding</span>
+    <span style="padding: 8px 16px; border: 2px solid var(--brand-ink); border-radius: 999px; font-size: 14px; font-weight: 700; background: var(--brand-green); color: white; box-shadow: var(--shadow-sticker-sm);">Demand Intelligence</span>
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">1 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="2">
+    <div class="slide" style="background: var(--brand-cream);">
+
+
+<div style="padding: 60px 80px; height: 100%; display: flex; flex-direction: column;">
+  <div class="tag sticker sticker-coral" style="align-self: flex-start; transform: rotate(-1deg); margin-bottom: 24px;">The Problem</div>
+  <div style="display: flex; justify-content: space-around; align-items: center; flex: 1;">
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 64px; color: var(--brand-ink);">13M</div>
+      <div style="font-size: 16px; color: var(--muted); font-weight: 600;">kirana shops</div>
+    </div>
+    <div style="width: 2px; height: 80px; background: var(--brand-ink); opacity: 0.15;"></div>
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 64px; color: var(--brand-ink);">$850B</div>
+      <div style="font-size: 16px; color: var(--muted); font-weight: 600;">annual retail GMV</div>
+    </div>
+    <div style="width: 2px; height: 80px; background: var(--brand-ink); opacity: 0.15;"></div>
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 64px; color: var(--brand-coral);">&lt;5%</div>
+      <div style="font-size: 16px; color: var(--muted); font-weight: 600;">digitally discoverable</div>
+    </div>
+  </div>
+  <div class="sticker sticker-yellow" style="text-align: center; font-size: 22px; font-weight: 800; color: var(--brand-ink); margin-top: 20px;">
+    95% of India's neighborhood retail is INVISIBLE online.
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">2 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="3">
+    <div class="slide" style="background: var(--brand-cream);">
+
+
+<div style="padding: 60px 80px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+  <div class="tag sticker sticker-coral" style="transform: rotate(-1deg); margin-bottom: 32px;">Customer Pain</div>
+  <div class="sticker sticker-cream" style="font-size: 36px; font-weight: 800; color: var(--brand-ink); margin-bottom: 24px; transform: rotate(-1deg);">
+    "Bhai, yeh hai kya?"
+  </div>
+  <div style="font-size: 20px; color: var(--muted); font-weight: 600; margin-bottom: 32px;">
+    "Nahi hai." → Next shop. → "Nahi hai." → Next shop. → Amazon.
+  </div>
+  <div class="sticker sticker-yellow" style="font-size: 24px; font-weight: 800; color: var(--brand-ink); transform: rotate(1deg);">
+    The shop next door was never discoverable.
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">3 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="4">
+    <div class="slide" style="background: var(--brand-cream);">
+
+
+<div style="padding: 60px 80px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+  <div class="tag sticker sticker-coral" style="transform: rotate(-1deg); margin-bottom: 32px;">Shopkeeper Pain</div>
+  <div class="sticker sticker-ink" style="font-size: 32px; font-weight: 800; margin-bottom: 24px; transform: rotate(-1deg);">
+    "Upload your entire inventory."
+  </div>
+  <div style="font-size: 20px; color: var(--muted); font-weight: 600; margin-bottom: 32px;">
+    Thousands of SKUs. No barcodes. No time. No reason to trust.
+  </div>
+  <div class="sticker sticker-yellow" style="font-size: 24px; font-weight: 800; color: var(--brand-ink); margin-bottom: 16px; transform: rotate(1deg);">
+    So they don't. And they disappear from the digital map.
+  </div>
+  <div style="font-size: 22px; font-weight: 800; color: var(--brand-ink);">
+    The shops exist. The demand exists. But they don't meet.
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">4 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="5">
+    <div class="slide" style="background: var(--brand-yellow);">
+
+
+<div style="padding: 60px 80px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; background: var(--brand-yellow);">
+  <div style="font-family: var(--font-display); font-size: 56px; color: var(--brand-ink); margin-bottom: 24px;">Meet Vyapaar-Mitra</div>
+  <div style="font-size: 36px; font-weight: 800; color: var(--brand-green); margin-bottom: 40px;">Go live without a catalog.</div>
+  <div style="font-size: 18px; color: var(--brand-ink); opacity: 0.7; margin-bottom: 32px; font-weight: 600;">A shopkeeper joins with just TWO things:</div>
+  <div style="display: flex; gap: 32px;">
+    <div class="sticker" style="background: white; text-align: center; min-width: 200px; transform: rotate(-2deg);">
+      <div style="font-family: var(--font-display); font-size: 28px; color: var(--brand-ink);">CATEGORY</div>
+      <div style="font-size: 14px; color: var(--muted); margin-top: 8px;">Kirana · Hardware · Medical</div>
+    </div>
+    <div style="font-size: 40px; font-weight: 800; color: var(--brand-ink); align-self: center;">+</div>
+    <div class="sticker" style="background: white; text-align: center; min-width: 200px; transform: rotate(2deg);">
+      <div style="font-family: var(--font-display); font-size: 28px; color: var(--brand-ink);">LOCATION</div>
+      <div style="font-size: 14px; color: var(--muted); margin-top: 8px;">Lat + Lng only</div>
+    </div>
+  </div>
+  <div style="margin-top: 32px; font-size: 20px; font-weight: 800; color: var(--brand-ink);">That's it. No catalog. No barcode. No upload.</div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">5 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="6">
+    <div class="slide" style="background: var(--brand-cream);">
+
+
+<div style="padding: 48px 60px; height: 100%; display: flex; flex-direction: column;">
+  <div class="tag sticker sticker-yellow" style="align-self: flex-start; transform: rotate(-1deg); margin-bottom: 24px;">The Product Loop</div>
+  <div style="display: flex; justify-content: space-between; align-items: center; flex: 1; gap: 8px;">
+    
+    <div style="text-align: center; flex: 1;">
+      <div style="width: 64px; height: 64px; border-radius: 50%; background: var(--brand-yellow); border: 2.5px solid var(--brand-ink); box-shadow: var(--shadow-sticker-sm); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 24px; color: var(--brand-ink); margin: 0 auto 12px;">1</div>
+      <div style="font-size: 14px; font-weight: 800; color: var(--brand-ink); margin-bottom: 4px;">Customer asks</div>
+      <div style="font-size: 11px; color: var(--muted);">Voice · Text · Photo</div>
+      <div style="font-size: 20px; color: var(--brand-ink); opacity: 0.3; margin-top: 8px;">→</div>
+    </div>
+    
+    <div style="text-align: center; flex: 1;">
+      <div style="width: 64px; height: 64px; border-radius: 50%; background: var(--brand-yellow); border: 2.5px solid var(--brand-ink); box-shadow: var(--shadow-sticker-sm); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 24px; color: var(--brand-ink); margin: 0 auto 12px;">2</div>
+      <div style="font-size: 14px; font-weight: 800; color: var(--brand-ink); margin-bottom: 4px;">AI understands</div>
+      <div style="font-size: 11px; color: var(--muted);">Gemini → intent</div>
+      <div style="font-size: 20px; color: var(--brand-ink); opacity: 0.3; margin-top: 8px;">→</div>
+    </div>
+    
+    <div style="text-align: center; flex: 1;">
+      <div style="width: 64px; height: 64px; border-radius: 50%; background: var(--brand-yellow); border: 2.5px solid var(--brand-ink); box-shadow: var(--shadow-sticker-sm); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 24px; color: var(--brand-ink); margin: 0 auto 12px;">3</div>
+      <div style="font-size: 14px; font-weight: 800; color: var(--brand-ink); margin-bottom: 4px;">Shops respond</div>
+      <div style="font-size: 11px; color: var(--muted);">YES + price · NO</div>
+      <div style="font-size: 20px; color: var(--brand-ink); opacity: 0.3; margin-top: 8px;">→</div>
+    </div>
+    
+    <div style="text-align: center; flex: 1;">
+      <div style="width: 64px; height: 64px; border-radius: 50%; background: var(--brand-yellow); border: 2.5px solid var(--brand-ink); box-shadow: var(--shadow-sticker-sm); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 24px; color: var(--brand-ink); margin: 0 auto 12px;">4</div>
+      <div style="font-size: 14px; font-weight: 800; color: var(--brand-ink); margin-bottom: 4px;">Customer compares</div>
+      <div style="font-size: 11px; color: var(--muted);">All offers, sorted</div>
+      <div style="font-size: 20px; color: var(--brand-ink); opacity: 0.3; margin-top: 8px;">→</div>
+    </div>
+    
+    <div style="text-align: center; flex: 1;">
+      <div style="width: 64px; height: 64px; border-radius: 50%; background: var(--brand-yellow); border: 2.5px solid var(--brand-ink); box-shadow: var(--shadow-sticker-sm); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 24px; color: var(--brand-ink); margin: 0 auto 12px;">5</div>
+      <div style="font-size: 14px; font-weight: 800; color: var(--brand-ink); margin-bottom: 4px;">Picks exactly one</div>
+      <div style="font-size: 11px; color: var(--muted);">Atomic selection</div>
+      <div style="font-size: 20px; color: var(--brand-ink); opacity: 0.3; margin-top: 8px;">→</div>
+    </div>
+    
+    <div style="text-align: center; flex: 1;">
+      <div style="width: 64px; height: 64px; border-radius: 50%; background: var(--brand-green); border: 2.5px solid var(--brand-ink); box-shadow: var(--shadow-sticker-sm); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 24px; color: white; margin: 0 auto 12px;">6</div>
+      <div style="font-size: 14px; font-weight: 800; color: var(--brand-ink); margin-bottom: 4px;">Demand intelligence</div>
+      <div style="font-size: 11px; color: var(--muted);">Every YES/NO = data</div>
+      
+    </div>
+    
+  </div>
+  <div class="sticker sticker-yellow" style="text-align: center; font-size: 18px; font-weight: 800; color: var(--brand-ink); margin-top: 20px;">
+    The loop closes: every YES/NO feeds back as demand intelligence.
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">6 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="7">
+    <div class="slide" style="background: var(--brand-ink);">
+
+
+<div style="padding: 60px 80px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+  <div class="tag sticker sticker-coral" style="transform: rotate(-1deg); margin-bottom: 32px;">The Breakdown</div>
+  <div style="font-family: var(--font-display); font-size: 48px; color: white; margin-bottom: 24px;">11 PM. 40 km from town. Bike dies.</div>
+  <div style="font-size: 28px; font-weight: 800; color: var(--brand-coral); margin-bottom: 32px;">No one picks up.</div>
+  <div class="sticker" style="background: white; font-size: 20px; font-weight: 600; color: var(--brand-ink); margin-bottom: 24px; transform: rotate(-1deg);">
+    Open Vyapaar-Mitra. Say: "Bike kharab ho gayi."
+  </div>
+  <div style="font-size: 28px; font-weight: 800; color: var(--brand-yellow); margin-bottom: 16px;">
+    20 seconds → 3 mechanics respond with prices.
+  </div>
+  <div style="font-size: 20px; color: white; opacity: 0.8;">Compare. Pick. He comes. You're home by midnight.</div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">7 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="8">
+    <div class="slide" style="background: var(--brand-cream);">
+
+
+<div style="padding: 60px 80px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+  <div class="tag sticker sticker-green" style="transform: rotate(-1deg); margin-bottom: 32px;">The Other Side</div>
+  <div style="font-family: var(--font-display); font-size: 48px; color: var(--brand-ink); margin-bottom: 24px;">This is Ramesh.</div>
+  <div style="font-size: 20px; color: var(--muted); font-weight: 600; margin-bottom: 32px;">
+    One-man repair shop. No website. No ads. No catalog.
+  </div>
+  <div class="sticker sticker-yellow" style="font-size: 22px; font-weight: 800; color: var(--brand-ink); margin-bottom: 24px; transform: rotate(1deg);">
+    Tonight, he gets a ping.<br>He taps YES. Adds his price.<br>He earns ₹350.
+  </div>
+  <div style="font-size: 20px; font-weight: 800; color: var(--brand-ink);">
+    No middleman. No commission. Just a connection that finally happened.
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">8 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="9">
+    <div class="slide" style="background: var(--brand-cream);">
+
+
+<div style="padding: 60px 80px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+  <div class="tag sticker sticker-yellow" style="transform: rotate(-1deg); margin-bottom: 32px;">Same Loop, Different Product</div>
+  <div class="sticker sticker-cream" style="font-size: 28px; font-weight: 800; color: var(--brand-ink); margin-bottom: 24px; transform: rotate(-1deg);">
+    "Half kg Basmati rice. Aur 2 liter oil."
+  </div>
+  <div style="font-size: 20px; color: var(--muted); font-weight: 600; margin-bottom: 32px;">
+    3 kirana shops respond within 1.5 km
+  </div>
+  <div style="font-size: 20px; font-weight: 700; color: var(--brand-ink); margin-bottom: 32px;">
+    Compare prices → Pick nearest → Walk over → Pick up
+  </div>
+  <div class="sticker sticker-coral" style="font-size: 24px; font-weight: 800; color: white; transform: rotate(1deg);">
+    The shopkeeper who said NO? That NO is gold.
+  </div>
+  <div style="font-size: 16px; color: var(--muted); margin-top: 16px;">Because it becomes a demand signal.</div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">9 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="10">
+    <div class="slide" style="background: var(--brand-ink);">
+
+
+<div style="padding: 60px 80px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+  <div class="tag sticker sticker-yellow" style="transform: rotate(-1deg); margin-bottom: 24px;">Demand Intelligence</div>
+  <div style="font-family: var(--font-display); font-size: 40px; color: white; margin-bottom: 40px;">Every NO becomes a signal.</div>
+  <div style="display: flex; gap: 40px; margin-bottom: 40px;">
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 56px; color: var(--brand-yellow);">14</div>
+      <div style="font-size: 14px; color: var(--muted); font-weight: 600;">customers asked</div>
+    </div>
+    <div style="width: 2px; background: white; opacity: 0.2;"></div>
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 56px; color: var(--brand-coral);">79%</div>
+      <div style="font-size: 14px; color: var(--muted); font-weight: 600;">couldn't find it</div>
+    </div>
+    <div style="width: 2px; background: white; opacity: 0.2;"></div>
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 56px; color: var(--brand-green);">87</div>
+      <div style="font-size: 14px; color: var(--muted); font-weight: 600;">opportunity score</div>
+    </div>
+  </div>
+  <div style="font-size: 14px; color: var(--muted); margin-bottom: 24px;">Privacy-safe ~300m heatmap. No customer identity exposed.</div>
+  <div style="font-size: 22px; font-weight: 800; color: var(--brand-yellow);">
+    That's not just a marketplace. That's demand intelligence.
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">10 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="11">
+    <div class="slide" style="background: var(--brand-cream);">
+
+
+<div style="padding: 48px 60px; height: 100%; display: flex; flex-direction: column;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+    <div class="tag sticker sticker-yellow" style="transform: rotate(-1deg);">Pro Dashboard</div>
+    <div class="sticker sticker-ink" style="font-size: 28px; font-weight: 800; transform: rotate(1deg);">₹299 / month</div>
+  </div>
+  <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; flex: 1; align-content: center;">
+    
+    <div class="sticker" style="background: var(--brand-cream); text-align: center; font-size: 16px; font-weight: 800; color: var(--brand-ink); transform: rotate(-1deg); display: flex; align-items: center; justify-content: center;">
+      Nearby hot products
+    </div>
+    
+    <div class="sticker" style="background: white; text-align: center; font-size: 16px; font-weight: 800; color: var(--brand-ink); transform: rotate(1deg); display: flex; align-items: center; justify-content: center;">
+      Sales analytics
+    </div>
+    
+    <div class="sticker" style="background: var(--brand-cream); text-align: center; font-size: 16px; font-weight: 800; color: var(--brand-ink); transform: rotate(-1deg); display: flex; align-items: center; justify-content: center;">
+      Smart pricing
+    </div>
+    
+    <div class="sticker" style="background: white; text-align: center; font-size: 16px; font-weight: 800; color: var(--brand-ink); transform: rotate(1deg); display: flex; align-items: center; justify-content: center;">
+      Slow-mover alerts
+    </div>
+    
+    <div class="sticker" style="background: var(--brand-cream); text-align: center; font-size: 16px; font-weight: 800; color: var(--brand-ink); transform: rotate(-1deg); display: flex; align-items: center; justify-content: center;">
+      Festival readiness
+    </div>
+    
+    <div class="sticker" style="background: white; text-align: center; font-size: 16px; font-weight: 800; color: var(--brand-ink); transform: rotate(1deg); display: flex; align-items: center; justify-content: center;">
+      Demand heatmap
+    </div>
+    
+  </div>
+  <div class="sticker sticker-green" style="text-align: center; font-size: 20px; font-weight: 800; margin-top: 16px;">
+    No commission. No ads. No race to the bottom.
+  </div>
+  <div style="text-align: center; font-size: 14px; color: var(--muted); margin-top: 8px; font-weight: 600;">
+    The shopkeeper who succeeds pays the same ₹299 as the one just starting.
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">11 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="12">
+    <div class="slide" style="background: var(--brand-cream);">
+
+
+<div style="padding: 48px 60px; height: 100%; display: flex; flex-direction: column;">
+  <div class="tag sticker sticker-coral" style="align-self: flex-start; transform: rotate(-1deg); margin-bottom: 24px;">Safety — The 4-Layer Stack</div>
+  <div style="display: flex; flex-direction: column; gap: 12px; flex: 1; justify-content: center;">
+    
+    <div class="sticker" style="background: var(--brand-yellow); color: var(--brand-ink); display: flex; align-items: center; gap: 24px; padding: 16px 24px;">
+      <div style="font-family: var(--font-display); font-size: 18px; min-width: 80px;">Layer 1</div>
+      <div style="font-size: 20px; font-weight: 800; min-width: 200px;">Phone OTP</div>
+      <div style="font-size: 14px; opacity: 0.7; flex: 1;">sha256 hashed · 5-min TTL · 5-attempt cap</div>
+    </div>
+    
+    <div class="sticker" style="background: white; color: var(--brand-ink); display: flex; align-items: center; gap: 24px; padding: 16px 24px;">
+      <div style="font-family: var(--font-display); font-size: 18px; min-width: 80px;">Layer 2</div>
+      <div style="font-size: 20px; font-weight: 800; min-width: 200px;">Shopfront Photo</div>
+      <div style="font-size: 14px; opacity: 0.7; flex: 1;">EXIF GPS + browser GPS cross-check (≤200m)</div>
+    </div>
+    
+    <div class="sticker" style="background: var(--brand-cream); color: var(--brand-ink); display: flex; align-items: center; gap: 24px; padding: 16px 24px;">
+      <div style="font-family: var(--font-display); font-size: 18px; min-width: 80px;">Layer 3</div>
+      <div style="font-size: 20px; font-weight: 800; min-width: 200px;">Admin Approval</div>
+      <div style="font-size: 14px; opacity: 0.7; flex: 1;">Human reviews photo before shop goes live</div>
+    </div>
+    
+    <div class="sticker" style="background: var(--brand-coral); color: white; display: flex; align-items: center; gap: 24px; padding: 16px 24px;">
+      <div style="font-family: var(--font-display); font-size: 18px; min-width: 80px;">Layer 4</div>
+      <div style="font-size: 20px; font-weight: 800; min-width: 200px;">is_verified Gate</div>
+      <div style="font-size: 14px; opacity: 0.7; flex: 1;">Unverified shops are NEVER matched to customers</div>
+    </div>
+    
+  </div>
+  <div style="text-align: center; font-size: 14px; color: var(--muted); font-weight: 600; margin-top: 12px;">
+    + In-app chat (anonymised) · Report button · Panic button · Share-trip · Trusted contact
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">12 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="13">
+    <div class="slide" style="background: var(--brand-ink);">
+
+
+<div style="padding: 60px 80px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+  <div class="tag sticker sticker-yellow" style="transform: rotate(-1deg); margin-bottom: 40px;">Unit Economics</div>
+  <div style="display: flex; justify-content: space-around; width: 100%; margin-bottom: 40px;">
+    
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 48px; color: var(--brand-yellow);">₹254</div>
+      <div style="font-size: 14px; color: var(--muted); font-weight: 600; margin-top: 8px;">ARPU / month</div>
+    </div>
+    
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 48px; color: var(--brand-yellow);">₹800</div>
+      <div style="font-size: 14px; color: var(--muted); font-weight: 600; margin-top: 8px;">CAC</div>
+    </div>
+    
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 48px; color: var(--brand-yellow);">3.1 mo</div>
+      <div style="font-size: 14px; color: var(--muted); font-weight: 600; margin-top: 8px;">Payback</div>
+    </div>
+    
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 48px; color: var(--brand-yellow);">7.6×</div>
+      <div style="font-size: 14px; color: var(--muted); font-weight: 600; margin-top: 8px;">LTV / CAC</div>
+    </div>
+    
+    <div style="text-align: center;">
+      <div style="font-family: var(--font-display); font-size: 48px; color: var(--brand-yellow);">85%</div>
+      <div style="font-size: 14px; color: var(--muted); font-weight: 600; margin-top: 8px;">Gross margin</div>
+    </div>
+    
+  </div>
+  <div style="font-size: 24px; font-weight: 800; color: white; margin-bottom: 24px;">
+    This is a real business. Not just a demo.
+  </div>
+  <div style="font-size: 16px; color: var(--muted); font-weight: 600;">
+    ₹15 lakh seed ask · 18-month runway · 500 shops · ₹1.27L MRR (Year 1)
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">13 / 14</div>
+
+    </div>
+  </div>
+  <div class="slide-frame" data-slide="14">
+    <div class="slide" style="background: var(--brand-yellow);">
+
+
+<div style="padding: 80px 80px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; background: var(--brand-yellow);">
+  <div style="font-family: var(--font-display); font-size: 64px; color: var(--brand-ink); margin-bottom: 24px;">VYAPAAR-MITRA</div>
+  <div style="width: 80px; height: 5px; background: var(--brand-ink); border-radius: 3px; margin: 12px 0 32px;"></div>
+  <div style="font-family: var(--font-display); font-size: 40px; color: var(--brand-green); margin-bottom: 32px;">
+    Kuch Karke Dikhana Hai
+  </div>
+  <div style="font-size: 20px; color: var(--brand-ink); opacity: 0.7; font-weight: 600; margin-bottom: 40px;">
+    The demand layer for India's $850B neighborhood retail.
+  </div>
+  <div style="font-size: 14px; color: var(--brand-ink); opacity: 0.5; font-weight: 600;">
+    github.com/IamKavy47/vyapaar  ·  localmart.mufests.com
+  </div>
+</div>
+
+<div class="footer-brand">Vyapaar-Mitra  ·  Kuch Karke Dikhana Hai</div>
+<div class="page-num">14 / 14</div>
+
+    </div>
+  </div>
+</div>
+
+<button class="nav-arrow nav-prev" id="prevBtn" onclick="prevSlide()">‹</button>
+<button class="nav-arrow nav-next" id="nextBtn" onclick="nextSlide()">›</button>
+<div class="slide-counter" id="counter">1 / 14</div>
+<button class="fs-btn" id="fsBtn" onclick="toggleFullscreen()">⛶</button>
+
+<script>
+let currentSlide = 0;
+const totalSlides = 14;
+const slides = document.querySelectorAll(".slide-frame");
+const counter = document.getElementById("counter");
+const progress = document.getElementById("progress");
+const prevBtn = document.getElementById("prevBtn");
+const nextBtn = document.getElementById("nextBtn");
+
+function showSlide(n) {
+  if (n < 0 || n >= totalSlides) return;
+  slides[currentSlide].classList.remove("active");
+  currentSlide = n;
+  slides[currentSlide].classList.add("active");
+  counter.textContent = (currentSlide + 1) + " / " + totalSlides;
+  progress.style.width = ((currentSlide + 1) / totalSlides * 100) + "%";
+  prevBtn.disabled = currentSlide === 0;
+  nextBtn.disabled = currentSlide === totalSlides - 1;
+}
+
+function nextSlide() { showSlide(currentSlide + 1); }
+function prevSlide() { showSlide(currentSlide - 1); }
+
+// Keyboard navigation
+document.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") {
+    e.preventDefault();
+    nextSlide();
+  } else if (e.key === "ArrowLeft" || e.key === "PageUp") {
+    e.preventDefault();
+    prevSlide();
+  } else if (e.key === "Home") {
+    showSlide(0);
+  } else if (e.key === "End") {
+    showSlide(totalSlides - 1);
+  } else if (e.key === "f" || e.key === "F") {
+    toggleFullscreen();
+  }
+});
+
+// Touch / swipe navigation
+let touchStartX = 0;
+document.addEventListener("touchstart", (e) => {
+  touchStartX = e.touches[0].clientX;
+});
+document.addEventListener("touchend", (e) => {
+  const touchEndX = e.changedTouches[0].clientX;
+  const diff = touchStartX - touchEndX;
+  if (Math.abs(diff) > 50) {
+    if (diff > 0) nextSlide();
+    else prevSlide();
+  }
+});
+
+// Fullscreen
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen();
+  } else {
+    document.exitFullscreen();
+  }
+}
+
+// Init
+showSlide(0);
+</script>
+
+</body>
+</html>
